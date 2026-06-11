@@ -1,0 +1,102 @@
+import { test, expect, describe } from "bun:test";
+import type { AppProps } from "./app.tsx";
+import { pickFromLocation } from "./app.tsx";
+import { parseLocation } from "./context.ts";
+
+// These tests pin the public observability-hook shape. The router's
+// `onNavigate` / `onResolve` are documented RUM hooks — adding/renaming
+// fields without bumping consumers is a breaking change to monitoring
+// dashboards. If a future refactor changes the hook signatures, these
+// type-level assertions will fail at compile time.
+
+describe("AppProps observability hooks — timing", () => {
+  test("onNavigate receives startedAt", () => {
+    const captured: { startedAt?: number } = {};
+    const onNavigate: NonNullable<AppProps["onNavigate"]> = (event) => {
+      // Field must exist and be a number — pin the shape.
+      const v: number = event.startedAt;
+      captured.startedAt = v;
+    };
+    onNavigate({
+      from: { pathname: "/", search: "", hash: "" },
+      to: { pathname: "/x", search: "", hash: "" },
+      source: "soft",
+      startedAt: 12.5,
+    });
+    expect(captured.startedAt).toBe(12.5);
+  });
+
+  test("onResolve receives startedAt, resolvedAt, durationMs", () => {
+    const captured: {
+      startedAt?: number;
+      resolvedAt?: number;
+      durationMs?: number;
+    } = {};
+    const onResolve: NonNullable<AppProps["onResolve"]> = (event) => {
+      // Pin all three timing fields — type errors here mean a contract
+      // break with consumers' RUM dashboards.
+      captured.startedAt = event.startedAt;
+      captured.resolvedAt = event.resolvedAt;
+      captured.durationMs = event.durationMs;
+    };
+    onResolve({
+      location: { pathname: "/x", search: "", hash: "" },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      resolution: {} as any,
+      startedAt: 100,
+      resolvedAt: 175.25,
+      durationMs: 75.25,
+    });
+    expect(captured).toEqual({
+      startedAt: 100,
+      resolvedAt: 175.25,
+      durationMs: 75.25,
+    });
+  });
+
+  test("durationMs equals resolvedAt - startedAt by convention", () => {
+    // Pure shape test — the App component emits this relationship; the
+    // type doesn't enforce it but RUM math depends on it being reliable.
+    const event = {
+      startedAt: 10,
+      resolvedAt: 42.5,
+      durationMs: 32.5,
+    };
+    expect(event.resolvedAt - event.startedAt).toBeCloseTo(event.durationMs);
+  });
+});
+
+describe("pickFromLocation — popstate `from` correctness", () => {
+  test("pop with a committed last location uses that, NOT window.location (which already moved)", () => {
+    const last = parseLocation(new URL("https://x.com/a"));
+    const win = parseLocation(new URL("https://x.com/b"));
+    const out = pickFromLocation("pop", last, () => win);
+    expect(out.pathname).toBe("/a");
+    // Critically: the test would fail if the impl read window.location
+    // for popstate, which is the bug we're guarding against.
+    expect(out.pathname).not.toBe(win.pathname);
+  });
+
+  test("soft uses window.location (history hasn't moved yet)", () => {
+    const last = parseLocation(new URL("https://x.com/a"));
+    const win = parseLocation(new URL("https://x.com/b"));
+    const out = pickFromLocation("soft", last, () => win);
+    // For soft nav, window.location is the outgoing URL — that's `from`.
+    expect(out.pathname).toBe("/b");
+  });
+
+  test("init uses window.location", () => {
+    const win = parseLocation(new URL("https://x.com/initial"));
+    const out = pickFromLocation("init", null, () => win);
+    expect(out.pathname).toBe("/initial");
+  });
+
+  test("pop with NO committed last location falls back to window.location (first nav of session)", () => {
+    // Edge case: a popstate firing before we've committed anything (rare,
+    // but possible if user uses back/forward instantly on first paint).
+    const win = parseLocation(new URL("https://x.com/x"));
+    const out = pickFromLocation("pop", null, () => win);
+    expect(out.pathname).toBe("/x");
+  });
+});
+
