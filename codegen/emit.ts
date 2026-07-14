@@ -213,7 +213,7 @@ function readConfigExports(configPath: string): Set<string> {
 }
 
 function hasDirectExportDeclaration(source: string, name: string): boolean {
-    const directDecl = /\bexport\s+(?:const|let|var)\s+([^;]+)/g;
+    const directDecl = /\bexport\s+(?:const|let|var)\s+([\s\S]*?)(?=;|\n\s*export\b|$)/g;
     for (const match of source.matchAll(directDecl)) {
         const declaration = match[1] ?? "";
         for (const declarator of splitTopLevelDeclarators(declaration)) {

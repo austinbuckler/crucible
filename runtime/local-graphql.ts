@@ -14,6 +14,7 @@ export type LocalGraphQLContextFactoryArgs = {
   input: string;
   init: RequestInit;
   request: LocalGraphQLRequest;
+  signal: AbortSignal;
 };
 
 export type LocalGraphQLFetchOptions<TContext = unknown> = {
@@ -281,8 +282,9 @@ export function createLocalGraphQLFetch<TContext = unknown>(
               input,
               init,
               request,
+              signal: init.signal ?? new AbortController().signal,
             })
-          : options.context;
+          : addSignalToContext(options.context, init.signal ?? new AbortController().signal);
       throwIfAborted(init.signal);
 
       const result = (await execute({
@@ -368,8 +370,9 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
                   input,
                   init: requestInit,
                   request,
+                  signal: controller.signal,
                 })
-              : options.context;
+              : addSignalToContext(options.context, controller.signal);
           if (!active) return;
           throwIfAborted(controller.signal);
 
@@ -444,6 +447,11 @@ function normalizeWorkerError(error: WorkerErrorMessage["error"]): Error {
 
 function throwIfAborted(signal: AbortSignal | null | undefined): void {
   if (signal?.aborted) throw makeAbortError();
+}
+
+function addSignalToContext<TContext>(context: TContext, signal: AbortSignal): TContext {
+  if (!context || typeof context !== "object" || "signal" in context) return context;
+  return { ...(context as object), signal } as TContext;
 }
 
 function dropCachedWorker(options: LocalGraphQLWorkerOptions, worker: Worker): void {
@@ -628,6 +636,16 @@ export function createLocalGraphQLWorkerSubscribe(
       let disposed = false;
       let finished = false;
       let sent = false;
+      const onAbort = () => {
+        if (!sent || finished) return;
+        pending.delete(id);
+        activeWorker?.postMessage({
+          type: "crucible:local-graphql:cancel",
+          id,
+        } satisfies WorkerOutboundMessage);
+        sink.error(makeAbortError());
+      };
+      init.signal?.addEventListener("abort", onAbort, { once: true });
 
       void (async () => {
         try {
@@ -664,6 +682,7 @@ export function createLocalGraphQLWorkerSubscribe(
 
       return () => {
         disposed = true;
+        init.signal?.removeEventListener("abort", onAbort);
         pending.delete(id);
         if (finished || !sent) return;
         activeWorker?.postMessage({

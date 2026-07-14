@@ -441,4 +441,18 @@ describe("runCodegen — full pipeline", () => {
     expect(main).not.toContain("__cruxLocalGraphQL");
     rmSync(root, { recursive: true });
   });
+
+  test("main.tsx config export detection handles semicolonless exports", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        export const network = {}
+        export const localGraphQL = {} as never
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain("network as __cruxNetwork, localGraphQL as __cruxLocalGraphQL");
+    rmSync(root, { recursive: true });
+  });
 });
