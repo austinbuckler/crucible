@@ -323,13 +323,16 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
       let active = true;
       let iterator: AsyncIterator<ExecutionResult> | null = null;
       const controller = new AbortController();
-      const onAbort = () => controller.abort();
-      init.signal?.addEventListener("abort", onAbort, { once: true });
-      if (init.signal?.aborted) controller.abort();
       let resolveAbort: (() => void) | null = null;
       const abortPromise = new Promise<IteratorResult<ExecutionResult>>((resolve) => {
         resolveAbort = () => resolve({ done: true, value: undefined });
       });
+      const onAbort = () => {
+        controller.abort();
+        resolveAbort?.();
+      };
+      init.signal?.addEventListener("abort", onAbort, { once: true });
+      if (init.signal?.aborted) onAbort();
       const requestInit = { ...init, signal: controller.signal };
 
       void (async () => {
