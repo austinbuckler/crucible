@@ -72,6 +72,10 @@ export type AppProps = {
   // Manage focus across navigations (focus the page's main landmark or
   // a `[data-crucible-focus-target]` element). Default `true`.
   manageFocus?: boolean;
+  // Fallback rendered while the initial route is being resolved. Defaults to
+  // the built-in loading fallback. Generated apps with their own splash can
+  // pass `null` once they intentionally own boot UI.
+  bootFallback?: ReactNode;
   // Pluggable matcher. Default uses `matchRoute`. Replace for advanced
   // URL-shape handling (locale prefixes, case-insensitive, etc.).
   matcher?: MatchFn;
@@ -115,6 +119,7 @@ type BootingRouterState = {
 
 type ReadyRouterState = {
   status: "ready";
+  attemptId: number;
   location: ReturnType<typeof parseLocation>;
   navSource: NavSource;
   resolution: Resolution;
@@ -126,6 +131,150 @@ type ReadyRouterState = {
 
 type RouterState = BootingRouterState | ReadyRouterState;
 
+// Internal owner-state helpers. Exported so router lifecycle tests can pin
+// disposal behavior directly; not part of the public Crucible API.
+export type ResolutionOwnerState =
+  | "pending"
+  | "committed"
+  | "abandoned"
+  | "disposed";
+
+export type ResolutionOwner = {
+  id: number;
+  location: ReturnType<typeof parseLocation>;
+  navSource: NavSource;
+  startedAt: number;
+  resolution: Resolution;
+  state: ResolutionOwnerState;
+  committedAcked: boolean;
+  resolveNotified: boolean;
+};
+
+export type RouterOwners = {
+  nextId: number;
+  pending: Map<number, ResolutionOwner>;
+  abandoned: Map<number, ResolutionOwner>;
+  committed: ResolutionOwner | null;
+};
+
+type DisposeResolution = (resolution: Resolution) => void;
+
+export function createRouterOwners(): RouterOwners {
+  return {
+    nextId: 1,
+    pending: new Map(),
+    abandoned: new Map(),
+    committed: null,
+  };
+}
+
+export function addResolutionOwner(
+  owners: RouterOwners,
+  input: {
+    location: ReturnType<typeof parseLocation>;
+    navSource: NavSource;
+    startedAt: number;
+    resolution: Resolution;
+  },
+): ResolutionOwner {
+  const owner: ResolutionOwner = {
+    id: owners.nextId++,
+    location: input.location,
+    navSource: input.navSource,
+    startedAt: input.startedAt,
+    resolution: input.resolution,
+    state: "pending",
+    committedAcked: false,
+    resolveNotified: false,
+  };
+  owners.pending.set(owner.id, owner);
+  return owner;
+}
+
+export function abandonPendingResolutionOwners(owners: RouterOwners): void {
+  for (const [id, owner] of owners.pending) {
+    owner.state = "abandoned";
+    owners.abandoned.set(id, owner);
+  }
+  owners.pending.clear();
+}
+
+export function acknowledgeResolutionOwner(
+  owners: RouterOwners,
+  attemptId: number,
+  dispose: DisposeResolution = disposeResolution,
+): { owner: ResolutionOwner; firstCommitAck: boolean } | null {
+  const owner =
+    owners.committed?.id === attemptId
+      ? owners.committed
+      : owners.pending.get(attemptId) ?? owners.abandoned.get(attemptId);
+  if (!owner || owner.state === "disposed") return null;
+
+  const firstCommitAck = !owner.committedAcked;
+  const wasPending = owner.state === "pending";
+  const previous = owners.committed;
+  if (previous && previous.id !== owner.id) {
+    disposeResolutionOwner(previous, dispose);
+  }
+
+  owners.pending.delete(owner.id);
+  owners.abandoned.delete(owner.id);
+  owners.committed = owner;
+  owner.state = "committed";
+  owner.committedAcked = true;
+
+  if (wasPending) {
+    for (const [id, abandoned] of owners.abandoned) {
+      owners.abandoned.delete(id);
+      disposeResolutionOwner(abandoned, dispose);
+    }
+  }
+
+  return { owner, firstCommitAck };
+}
+
+export function disposeAllResolutionOwners(
+  owners: RouterOwners,
+  dispose: DisposeResolution = disposeResolution,
+): void {
+  const seen = new Set<number>();
+  const disposeOnce = (owner: ResolutionOwner | null) => {
+    if (!owner || seen.has(owner.id)) return;
+    seen.add(owner.id);
+    disposeResolutionOwner(owner, dispose);
+  };
+
+  disposeOnce(owners.committed);
+  for (const owner of owners.pending.values()) disposeOnce(owner);
+  for (const owner of owners.abandoned.values()) disposeOnce(owner);
+  owners.committed = null;
+  owners.pending.clear();
+  owners.abandoned.clear();
+}
+
+function disposeResolutionOwner(
+  owner: ResolutionOwner,
+  dispose: DisposeResolution,
+): void {
+  if (owner.state === "disposed") return;
+  owner.state = "disposed";
+  dispose(owner.resolution);
+}
+
+function hasResolutionOwners(owners: RouterOwners): boolean {
+  return owners.committed != null ||
+    owners.pending.size > 0 ||
+    owners.abandoned.size > 0;
+}
+
+function getResolutionOwner(
+  owners: RouterOwners,
+  attemptId: number,
+): ResolutionOwner | null {
+  if (owners.committed?.id === attemptId) return owners.committed;
+  return owners.pending.get(attemptId) ?? owners.abandoned.get(attemptId) ?? null;
+}
+
 export function App({
   routes,
   environment,
@@ -134,6 +283,7 @@ export function App({
   viewTransitions = true,
   restoreScroll = true,
   manageFocus = true,
+  bootFallback = <DefaultLoading />,
   matcher,
   scrollBehavior = defaultScrollBehavior,
   focusBehavior = defaultFocusBehavior,
@@ -147,7 +297,7 @@ export function App({
   // the navigate / popstate callbacks.
   const onNavigateRef = useRef(onNavigate);
   const onResolveRef = useRef(onResolve);
-  useEffect(() => {
+  useLayoutEffect(() => {
     onNavigateRef.current = onNavigate;
     onResolveRef.current = onResolve;
   });
@@ -155,7 +305,7 @@ export function App({
   // Last successfully-matched `page` route the user navigated to, kept
   // so on soft nav to a URL with no main match we preserve the previous
   // page (Next-style) and intercept renders have a frozen main beneath
-  // them. Mutated in `useEffect` after commit only — concurrent renders
+  // them. Mutated after commit acknowledgment only — concurrent renders
   // can be discarded; we don't want refs that point at routes the user
   // never actually saw.
   const lastMainRef = useRef<Match | null>(null);
@@ -168,15 +318,11 @@ export function App({
   // handler fires — we need this ref to recover the `from` URL.
   const lastLocationRef = useRef<ReturnType<typeof parseLocation> | null>(null);
 
-  // Resolution that `applyNav` produced but hasn't committed yet (the
-  // transition is still pending). When a NEW nav fires before this one
-  // commits — rapid double-click, or back-button mid-transition — the
-  // prior resolution will never render: dispose its PreloadedQuery
-  // refs so the orphaned queries release their store retains and abort
-  // their in-flight fetches. Cleared in the post-commit effect once
-  // its resolution lands as `state.resolution`.
-  const pendingResolutionRef = useRef<Resolution | null>(null);
-  const committedResolutionRef = useRef<Resolution | null>(null);
+  const ownersRef = useRef<RouterOwners | null>(null);
+  if (ownersRef.current == null) {
+    ownersRef.current = createRouterOwners();
+  }
+  const bootOwnerRef = useRef<ResolutionOwner | null>(null);
   const unmountDisposeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -207,83 +353,91 @@ export function App({
   });
 
   useLayoutEffect(() => {
-    const startedAt = state.startedAt;
-    const location = state.location;
-    const resolution = resolveAndLoad(buckets, location, "init", env, {
-      lastMain: null,
-      lastSlots: new Map(),
-    }, match);
+    let owner = bootOwnerRef.current;
+    if (owner == null) {
+      if (hasResolutionOwners(ownersRef.current!)) return;
+      const startedAt = state.startedAt;
+      const location = state.location;
+      const resolution = resolveAndLoad(buckets, location, "init", env, {
+        lastMain: null,
+        lastSlots: new Map(),
+      }, match);
+      owner = addResolutionOwner(ownersRef.current!, {
+        location,
+        navSource: "init",
+        startedAt,
+        resolution,
+      });
+      bootOwnerRef.current = owner;
+    }
     setState({
       status: "ready",
-      location,
-      navSource: "init",
-      resolution,
-      startedAt,
+      attemptId: owner.id,
+      location: owner.location,
+      navSource: owner.navSource,
+      resolution: owner.resolution,
+      startedAt: owner.startedAt,
     });
-    return () => {
-      disposeResolution(resolution);
-    };
   }, []);
 
-  // Update preservation refs AFTER commit so a discarded render's
-  // matches don't poison the "last seen" state.
-  useEffect(() => {
-    if (state.status !== "ready") return;
-    if (state.resolution.mainCommit) {
-      lastMainRef.current = state.resolution.mainCommit;
-    }
-    applySlotCommits(
-      lastSlotsRef.current,
-      buckets.allSlots,
-      state.resolution,
-    );
-    lastLocationRef.current = state.location;
-    const resolvedAt = performance.now();
-    onResolveRef.current?.({
-      location: {
-        pathname: state.location.pathname,
-        search: state.location.search.toString(),
-        hash: state.location.hash,
-      },
-      resolution: state.resolution,
-      startedAt: state.startedAt,
-      resolvedAt,
-      durationMs: resolvedAt - state.startedAt,
-    });
-  }, [state, buckets.allSlots]);
-
-  // Release committed `loadQuery` retains when the rendered resolution is
-  // replaced. Do this in effect setup, not cleanup: React StrictMode replays
-  // effect cleanup/setup in dev, and cleanup-based disposal would release the
-  // still-rendered PreloadedQuery refs during that replay.
-  useEffect(() => {
+  // Acknowledge rendered attempts in layout-effect setup. Cleanup owns
+  // nothing: StrictMode replays cleanup/setup in dev, and disposing there
+  // would release query refs that are still rendered.
+  useLayoutEffect(() => {
     if (state.status !== "ready") return;
     if (unmountDisposeTimerRef.current) {
       clearTimeout(unmountDisposeTimerRef.current);
       unmountDisposeTimerRef.current = null;
     }
-    const previous = committedResolutionRef.current;
-    if (previous && previous !== state.resolution) {
-      disposeResolution(previous);
+
+    const acknowledged = acknowledgeResolutionOwner(
+      ownersRef.current!,
+      state.attemptId,
+    );
+    if (!acknowledged?.firstCommitAck) return;
+
+    const { owner } = acknowledged;
+    const { resolution } = owner;
+    if (resolution.mainCommit) {
+      lastMainRef.current = resolution.mainCommit;
     }
-    committedResolutionRef.current = state.resolution;
-    if (pendingResolutionRef.current === state.resolution) {
-      pendingResolutionRef.current = null;
-    }
+    applySlotCommits(
+      lastSlotsRef.current,
+      buckets.allSlots,
+      resolution,
+    );
+    lastLocationRef.current = owner.location;
+  }, [state, buckets.allSlots]);
+
+  useEffect(() => {
+    if (state.status !== "ready") return;
+    const owner = getResolutionOwner(ownersRef.current!, state.attemptId);
+    if (!owner?.committedAcked || owner.resolveNotified) return;
+    owner.resolveNotified = true;
+    const resolvedAt = performance.now();
+    onResolveRef.current?.({
+      location: {
+        pathname: owner.location.pathname,
+        search: owner.location.search.toString(),
+        hash: owner.location.hash,
+      },
+      resolution: owner.resolution,
+      startedAt: owner.startedAt,
+      resolvedAt,
+      durationMs: resolvedAt - owner.startedAt,
+    });
   }, [state]);
 
   useEffect(() => {
+    if (unmountDisposeTimerRef.current) {
+      clearTimeout(unmountDisposeTimerRef.current);
+      unmountDisposeTimerRef.current = null;
+    }
     return () => {
       // Delay actual unmount disposal by one task so StrictMode's dev-only
       // cleanup/setup replay can cancel it in the setup above.
       unmountDisposeTimerRef.current = setTimeout(() => {
-        const committed = committedResolutionRef.current;
-        if (committed) disposeResolution(committed);
-        if (pendingResolutionRef.current) {
-          disposeResolution(pendingResolutionRef.current);
-          pendingResolutionRef.current = null;
-        }
-        committedResolutionRef.current = null;
+        disposeAllResolutionOwners(ownersRef.current!);
         unmountDisposeTimerRef.current = null;
       }, 0);
     };
@@ -314,21 +468,20 @@ export function App({
         source,
         startedAt,
       });
-      // Cancel any in-flight nav whose resolution hasn't committed.
-      // `disposeResolution` walks every PreloadedQuery handle (main + slots)
-      // and calls `.dispose()`. The
-      // network handler bridges Relay's unsubscribe into an
-      // `AbortController.abort()`, so the underlying fetch (and any
-      // pending transient-retry sleep) is cancelled too.
-      if (pendingResolutionRef.current) {
-        disposeResolution(pendingResolutionRef.current);
-        pendingResolutionRef.current = null;
-      }
+      // Move uncommitted attempts aside instead of disposing immediately.
+      // React may still commit an older transition; disposal happens only
+      // after a rendered attempt is acknowledged or when App unmounts.
+      abandonPendingResolutionOwners(ownersRef.current!);
       const resolution = resolveAndLoad(buckets, newLocation, source, env, {
         lastMain: lastMainRef.current,
         lastSlots: lastSlotsRef.current,
       }, match);
-      pendingResolutionRef.current = resolution;
+      const owner = addResolutionOwner(ownersRef.current!, {
+        location: newLocation,
+        navSource: source,
+        startedAt,
+        resolution,
+      });
       const commit = () => {
         historyOp();
         // Wrap the route swap in `startTransition` so React keeps the
@@ -343,6 +496,7 @@ export function App({
         startTransition(() => {
           setState({
             status: "ready",
+            attemptId: owner.id,
             location: newLocation,
             navSource: source,
             resolution,
@@ -438,7 +592,7 @@ export function App({
           >
             <NotFoundBoundary fallback={<DefaultNotFound />}>
               {state.status === "booting" ? (
-                <DefaultLoading />
+                bootFallback
               ) : (
                 <Suspense fallback={<DefaultLoading />}>
                   <RouteOutlet

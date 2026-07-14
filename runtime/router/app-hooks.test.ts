@@ -1,7 +1,15 @@
 import { test, expect, describe } from "bun:test";
 import type { AppProps } from "./app.tsx";
-import { pickFromLocation } from "./app.tsx";
+import {
+  abandonPendingResolutionOwners,
+  acknowledgeResolutionOwner,
+  addResolutionOwner,
+  createRouterOwners,
+  disposeAllResolutionOwners,
+  pickFromLocation,
+} from "./app.tsx";
 import { parseLocation } from "./context.ts";
+import type { Resolution } from "./resolve.ts";
 
 // These tests pin the public observability-hook shape. The router's
 // `onNavigate` / `onResolve` are documented RUM hooks — adding/renaming
@@ -100,3 +108,198 @@ describe("pickFromLocation — popstate `from` correctness", () => {
   });
 });
 
+describe("router resolution owners", () => {
+  test("acknowledging a pending owner promotes it once", () => {
+    const owners = createRouterOwners();
+    const disposeCalls: Resolution[] = [];
+    const owner = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/")),
+      navSource: "init",
+      startedAt: 1,
+      resolution: makeResolution(),
+    });
+
+    const first = acknowledgeResolutionOwner(
+      owners,
+      owner.id,
+      (resolution) => disposeCalls.push(resolution),
+    );
+    const replay = acknowledgeResolutionOwner(
+      owners,
+      owner.id,
+      (resolution) => disposeCalls.push(resolution),
+    );
+
+    expect(first?.owner).toBe(owner);
+    expect(first?.firstCommitAck).toBe(true);
+    expect(replay?.firstCommitAck).toBe(false);
+    expect(owners.committed).toBe(owner);
+    expect(owners.pending.size).toBe(0);
+    expect(disposeCalls).toHaveLength(0);
+  });
+
+  test("an abandoned owner can still commit before a newer attempt commits", () => {
+    const owners = createRouterOwners();
+    const disposeCalls: Resolution[] = [];
+    const committed = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/a")),
+      navSource: "init",
+      startedAt: 1,
+      resolution: makeResolution(),
+    });
+    acknowledgeResolutionOwner(owners, committed.id, (resolution) => {
+      disposeCalls.push(resolution);
+    });
+
+    const abandoned = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/b")),
+      navSource: "soft",
+      startedAt: 2,
+      resolution: makeResolution(),
+    });
+    abandonPendingResolutionOwners(owners);
+
+    const ack = acknowledgeResolutionOwner(
+      owners,
+      abandoned.id,
+      (resolution) => disposeCalls.push(resolution),
+    );
+
+    expect(ack?.owner).toBe(abandoned);
+    expect(ack?.firstCommitAck).toBe(true);
+    expect(owners.committed).toBe(abandoned);
+    expect(abandoned.state).toBe("committed");
+    expect(disposeCalls).toEqual([committed.resolution]);
+  });
+
+  test("superseded pending owners dispose after a newer owner commits", () => {
+    const owners = createRouterOwners();
+    const disposeCalls: Resolution[] = [];
+    const a = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/a")),
+      navSource: "init",
+      startedAt: 1,
+      resolution: makeResolution(),
+    });
+    acknowledgeResolutionOwner(owners, a.id, (resolution) => {
+      disposeCalls.push(resolution);
+    });
+
+    const b = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/b")),
+      navSource: "soft",
+      startedAt: 2,
+      resolution: makeResolution(),
+    });
+    abandonPendingResolutionOwners(owners);
+    expect(disposeCalls).toHaveLength(0);
+
+    const c = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/c")),
+      navSource: "soft",
+      startedAt: 3,
+      resolution: makeResolution(),
+    });
+    acknowledgeResolutionOwner(owners, c.id, (resolution) => {
+      disposeCalls.push(resolution);
+    });
+
+    expect(owners.committed).toBe(c);
+    expect(a.state).toBe("disposed");
+    expect(b.state).toBe("disposed");
+    expect(c.state).toBe("committed");
+    expect(disposeCalls).toEqual([a.resolution, b.resolution]);
+  });
+
+  test("acknowledging an abandoned owner preserves other abandoned owners", () => {
+    const owners = createRouterOwners();
+    const disposeCalls: Resolution[] = [];
+    const a = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/a")),
+      navSource: "init",
+      startedAt: 1,
+      resolution: makeResolution(),
+    });
+    acknowledgeResolutionOwner(owners, a.id, (resolution) => {
+      disposeCalls.push(resolution);
+    });
+
+    const b = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/b")),
+      navSource: "soft",
+      startedAt: 2,
+      resolution: makeResolution(),
+    });
+    abandonPendingResolutionOwners(owners);
+    const c = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/c")),
+      navSource: "soft",
+      startedAt: 3,
+      resolution: makeResolution(),
+    });
+    abandonPendingResolutionOwners(owners);
+
+    acknowledgeResolutionOwner(owners, b.id, (resolution) => {
+      disposeCalls.push(resolution);
+    });
+
+    expect(owners.committed).toBe(b);
+    expect(a.state).toBe("disposed");
+    expect(b.state).toBe("committed");
+    expect(c.state).toBe("abandoned");
+    expect(owners.abandoned.get(c.id)).toBe(c);
+    expect(disposeCalls).toEqual([a.resolution]);
+  });
+
+  test("disposeAll disposes committed, pending, and abandoned owners once", () => {
+    const owners = createRouterOwners();
+    const disposeCalls: Resolution[] = [];
+    const a = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/a")),
+      navSource: "init",
+      startedAt: 1,
+      resolution: makeResolution(),
+    });
+    acknowledgeResolutionOwner(owners, a.id, (resolution) => {
+      disposeCalls.push(resolution);
+    });
+    const b = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/b")),
+      navSource: "soft",
+      startedAt: 2,
+      resolution: makeResolution(),
+    });
+    abandonPendingResolutionOwners(owners);
+    const c = addResolutionOwner(owners, {
+      location: parseLocation(new URL("https://x.com/c")),
+      navSource: "soft",
+      startedAt: 3,
+      resolution: makeResolution(),
+    });
+
+    disposeAllResolutionOwners(owners, (resolution) => {
+      disposeCalls.push(resolution);
+    });
+    disposeAllResolutionOwners(owners, (resolution) => {
+      disposeCalls.push(resolution);
+    });
+
+    expect(disposeCalls).toEqual([a.resolution, c.resolution, b.resolution]);
+    expect(owners.committed).toBeNull();
+    expect(owners.pending.size).toBe(0);
+    expect(owners.abandoned.size).toBe(0);
+    expect(a.state).toBe("disposed");
+    expect(b.state).toBe("disposed");
+    expect(c.state).toBe("disposed");
+  });
+});
+
+function makeResolution(): Resolution {
+  return {
+    main: null,
+    slotMatches: new Map(),
+    mainLoaded: null,
+    slotLoaded: new Map(),
+    slotPageCommits: new Map(),
+  };
+}
