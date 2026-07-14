@@ -278,12 +278,15 @@ export function createLocalGraphQLFetch<TContext = unknown>(
 
       const contextValue =
         typeof options.context === "function"
-          ? await (options.context as (args: LocalGraphQLContextFactoryArgs) => MaybePromise<TContext>)({
-              input,
-              init,
-              request,
-              signal: init.signal ?? new AbortController().signal,
-            })
+          ? addSignalToContext(
+              await (options.context as (args: LocalGraphQLContextFactoryArgs) => MaybePromise<TContext>)({
+                input,
+                init,
+                request,
+                signal: init.signal ?? new AbortController().signal,
+              }),
+              init.signal ?? new AbortController().signal,
+            )
           : addSignalToContext(options.context, init.signal ?? new AbortController().signal);
       throwIfAborted(init.signal);
 
@@ -369,12 +372,15 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
 
           const contextValue =
             typeof options.context === "function"
-              ? await (options.context as (args: LocalGraphQLContextFactoryArgs) => MaybePromise<TContext>)({
-                  input,
-                  init: requestInit,
-                  request,
-                  signal: controller.signal,
-                })
+              ? addSignalToContext(
+                  await (options.context as (args: LocalGraphQLContextFactoryArgs) => MaybePromise<TContext>)({
+                    input,
+                    init: requestInit,
+                    request,
+                    signal: controller.signal,
+                  }),
+                  controller.signal,
+                )
               : addSignalToContext(options.context, controller.signal);
           if (!active) return;
           throwIfAborted(controller.signal);
