@@ -696,8 +696,12 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
         cancelled.add(message.id);
         requestControllers.get(message.id)?.abort();
         requestControllers.delete(message.id);
-        subscriptions.get(message.id)?.unsubscribe();
-        subscriptions.delete(message.id);
+        const subscription = subscriptions.get(message.id);
+        if (subscription) {
+          subscription.unsubscribe();
+          subscriptions.delete(message.id);
+          cancelled.delete(message.id);
+        }
         return;
       }
 

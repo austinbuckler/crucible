@@ -377,4 +377,38 @@ describe("runCodegen — full pipeline", () => {
     expect(main).toContain("<Crucible.AppShell>");
     rmSync(root, { recursive: true });
   });
+
+  test("main.tsx config export detection ignores comments, strings, and aliases away", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        // export const network = { fetch: globalThis.fetch };
+        const text = "export const localGraphQL = {}";
+        const network = { fetch: globalThis.fetch };
+        export { network as notNetwork };
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).not.toContain("crucible.config");
+    expect(main).toContain("Crucible.createEnvironment()");
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx config export detection accepts aliases into known names", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        const local = {} as CrucibleConfig["localGraphQL"];
+        export { local as localGraphQL };
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { localGraphQL as __cruxLocalGraphQL } from "../src/app/crucible.config.ts"',
+    );
+    rmSync(root, { recursive: true });
+  });
 });

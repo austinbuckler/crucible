@@ -195,6 +195,7 @@ function readConfigExports(configPath: string): Set<string> {
     } catch {
         return found;
     }
+    source = stripCommentsAndStrings(source);
     // Recognize:
     //   export const X = …
     //   export let X = …
@@ -207,14 +208,79 @@ function readConfigExports(configPath: string): Set<string> {
         const directDecl = new RegExp(
             `\\bexport\\s+(?:const|let|var)\\s+${name}\\b`,
         );
-        const namedExport = new RegExp(
-            `\\bexport\\s*\\{[^}]*\\b(?:[a-zA-Z_$][\\w$]*\\s+as\\s+)?${name}\\b[^}]*\\}`,
-        );
-        if (directDecl.test(source) || namedExport.test(source)) {
+        if (directDecl.test(source) || hasNamedExport(source, name)) {
             found.add(name);
         }
     }
     return found;
+}
+
+function hasNamedExport(source: string, name: string): boolean {
+    const exportBlock = /\bexport\s*\{([^}]*)\}/g;
+    for (const match of source.matchAll(exportBlock)) {
+        const specifiers = (match[1] ?? "").split(",");
+        for (const specifier of specifiers) {
+            const parts = specifier.trim().split(/\s+as\s+/);
+            const exportedName = (parts[1] ?? parts[0])?.trim();
+            if (exportedName === name) return true;
+        }
+    }
+    return false;
+}
+
+function stripCommentsAndStrings(source: string): string {
+    let out = "";
+    for (let i = 0; i < source.length; i++) {
+        const ch = source[i];
+        const next = source[i + 1];
+
+        if (ch === "/" && next === "/") {
+            out += "  ";
+            i += 2;
+            while (i < source.length && source[i] !== "\n") {
+                out += " ";
+                i++;
+            }
+            if (i < source.length) out += source[i];
+            continue;
+        }
+
+        if (ch === "/" && next === "*") {
+            out += "  ";
+            i += 2;
+            while (i < source.length) {
+                if (source[i] === "*" && source[i + 1] === "/") {
+                    out += "  ";
+                    i++;
+                    break;
+                }
+                out += source[i] === "\n" ? "\n" : " ";
+                i++;
+            }
+            continue;
+        }
+
+        if (ch === '"' || ch === "'" || ch === "`") {
+            const quote = ch;
+            out += " ";
+            while (++i < source.length) {
+                const current = source[i];
+                out += current === "\n" ? "\n" : " ";
+                if (current === "\\") {
+                    if (i + 1 < source.length) {
+                        i++;
+                        out += source[i] === "\n" ? "\n" : " ";
+                    }
+                    continue;
+                }
+                if (current === quote) break;
+            }
+            continue;
+        }
+
+        out += ch;
+    }
+    return out;
 }
 
 function emitEntrypoint(ctx: EmitContext, rwp: RouteWithPage): void {
