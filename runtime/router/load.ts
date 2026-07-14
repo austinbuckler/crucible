@@ -44,6 +44,12 @@ export function loadEntrypoint(
   const { queries } = match.route.entrypoint.getPreloadProps(preload);
   const preloaded: Record<string, PreloadedQuery<never>> = {};
   for (const [key, query] of Object.entries(queries)) {
+    if (!query || !query.parameters) {
+      throw new TypeError(
+        `[crucible] Entrypoint query ${JSON.stringify(key)} is missing parameters. Re-run codegen.`,
+      );
+    }
+    void query.artifact?.load();
     preloaded[key] = loadQuery<OperationType>(
       env,
       query.parameters,

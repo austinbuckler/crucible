@@ -6,6 +6,7 @@ import {
   Store,
   type GraphQLResponse,
   type MissingFieldHandler,
+  type RelayFieldLogger,
   type SubscribeFunction,
 } from "relay-runtime";
 import type { PlatformRuntime } from "./platform.ts";
@@ -259,6 +260,14 @@ export const NODE_MISSING_FIELD_HANDLER: MissingFieldHandler = {
   },
 };
 
+const RELAY_FIELD_LOGGER: RelayFieldLogger = (event) => {
+  if (event.kind !== "relay_resolver.error") return;
+  console.warn(
+    `[crucible] Relay resolver error in ${event.owner}.${event.fieldPath}`,
+    event.error,
+  );
+};
+
 function createRelayEnvironment(
   userFetch: FetchLike | undefined,
   userSubscribe: SubscribeLike | undefined,
@@ -405,6 +414,7 @@ function createRelayEnvironment(
       network,
       store,
       missingFieldHandlers: [NODE_MISSING_FIELD_HANDLER],
+      relayFieldLogger: RELAY_FIELD_LOGGER,
     }),
     dispose: persister.dispose,
   };

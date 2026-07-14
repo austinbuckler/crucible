@@ -4,6 +4,8 @@ Crucible doesn't do data fetching itself. It does **route-driven preloading** of
 
 The pattern is borrowed from [Pastoria](http://pastoria.org) — same EntryPoint shape, same parallel-chunk-and-data preload, adapted for Vite + Relay. If you're new to Relay's `loadQuery` + `usePreloadedQuery` API, [the Relay docs](https://relay.dev/docs/api-reference/use-preloaded-query/) cover the primitives Crucible composes.
 
+Framework/runtime state lives in the Relay graph too. See [App Graph](./app-graph.md) for `app { storage sync }` client resolver fields and the narrow action hooks that refresh/request platform state. For native-feeling refresh/relaunch restoration, see [View Persistence](./view-persistence.md).
+
 ## The flow
 
 ```
@@ -132,7 +134,7 @@ Authenticated apps should scope that key by a stable user or session identifier:
 // src/app/crucible.config.ts
 import type { CrucibleConfig } from "crucible";
 
-export const relayPersistence: CrucibleConfig["relayPersistence"] = {
+export const persistence: CrucibleConfig["persistence"] = {
   scope: localStorage.getItem("currentUserId"),
 };
 ```
@@ -140,7 +142,7 @@ export const relayPersistence: CrucibleConfig["relayPersistence"] = {
 With `scope: "user_123"`, the key becomes `crucible.relay-cache.<schemaHash>.user_123`. Unscoped apps keep the original key. Local-first apps that persist domain data to SQLite should usually disable Relay RecordSource persistence entirely:
 
 ```ts
-export const relayPersistence: CrucibleConfig["relayPersistence"] = {
+export const persistence: CrucibleConfig["persistence"] = {
   persistStore: false,
 };
 ```

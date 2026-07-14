@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import * as Crucible from "crucible";
 import { graphql, useMutation, usePreloadedQuery } from "react-relay";
 import type { page_CreateTodoMutation } from "./__generated__/page_CreateTodoMutation.graphql.ts";
 import type { page_ToggleTodoMutation } from "./__generated__/page_ToggleTodoMutation.graphql.ts";
@@ -7,12 +8,6 @@ import { SubscriptionProof } from "./subscription-proof.tsx";
 
 type Todo = NonNullable<page_TodosQuery["response"]["todos"]["edges"][number]["node"]>;
 
-type StorageEstimate = {
-  persisted: boolean | null;
-  usage: number | null;
-  quota: number | null;
-};
-
 const formatBytes = (value: number | null): string => {
   if (value == null) return "unknown";
   if (value < 1024) return `${value} B`;
@@ -20,10 +15,28 @@ const formatBytes = (value: number | null): string => {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 };
 
+const formatPercent = (value: number | null): string => {
+  if (value == null) return "unknown";
+  return `${(value * 100).toFixed(1)}%`;
+};
+
 export const metadata = { title: "Relay Local" };
 
 export const query = graphql`
   query page_TodosQuery @preloadable {
+    app {
+      storage {
+        persisted
+        usage
+        quota
+        usageRatio
+      }
+      sync {
+        online
+        status
+        pendingMutations
+      }
+    }
     todos(first: 50) {
       edges {
         node {
@@ -71,11 +84,10 @@ export default function Page({ data }: { data: import("react-relay").PreloadedQu
   );
   const [title, setTitle] = useState("");
   const [lastWrite, setLastWrite] = useState<string | null>(null);
-  const [storage, setStorage] = useState<StorageEstimate>({
-    persisted: null,
-    usage: null,
-    quota: null,
-  });
+  const storage = result.app?.storage ?? null;
+  const sync = result.app?.sync ?? null;
+  const refreshStorage = Crucible.useStorageRefresh();
+  const requestPersistence = Crucible.usePersistenceRequest();
   const [commitCreate, isCreating] = useMutation<page_CreateTodoMutation>(createTodoMutation);
   const [commitToggle, isToggling] = useMutation<page_ToggleTodoMutation>(toggleTodoMutation);
 
@@ -91,19 +103,9 @@ export default function Page({ data }: { data: import("react-relay").PreloadedQu
     });
   };
 
-  const refreshStorage = async () => {
-    const estimate = await navigator.storage?.estimate?.();
-    const persisted = await navigator.storage?.persisted?.();
-    setStorage({
-      persisted: persisted ?? null,
-      usage: estimate?.usage ?? null,
-      quota: estimate?.quota ?? null,
-    });
-  };
-
   useEffect(() => {
     void refreshStorage();
-  }, []);
+  }, [refreshStorage]);
 
   const addTodo = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -143,8 +145,7 @@ export default function Page({ data }: { data: import("react-relay").PreloadedQu
   };
 
   const askForPersistentStorage = async () => {
-    await navigator.storage?.persist?.();
-    await refreshStorage();
+    await requestPersistence();
   };
 
   return (
@@ -282,15 +283,26 @@ export default function Page({ data }: { data: import("react-relay").PreloadedQu
           <dl style={{ display: "grid", gap: 10 }}>
             <div>
               <dt style={{ color: "rgba(247,243,234,0.58)" }}>Storage persisted</dt>
-              <dd style={{ margin: 0 }}>{storage.persisted == null ? "unknown" : String(storage.persisted)}</dd>
+              <dd style={{ margin: 0 }}>{storage?.persisted == null ? "unknown" : String(storage.persisted)}</dd>
             </div>
             <div>
               <dt style={{ color: "rgba(247,243,234,0.58)" }}>Origin usage</dt>
-              <dd style={{ margin: 0 }}>{formatBytes(storage.usage)}</dd>
+              <dd style={{ margin: 0 }}>{formatBytes(storage?.usage ?? null)}</dd>
             </div>
             <div>
               <dt style={{ color: "rgba(247,243,234,0.58)" }}>Origin quota</dt>
-              <dd style={{ margin: 0 }}>{formatBytes(storage.quota)}</dd>
+              <dd style={{ margin: 0 }}>{formatBytes(storage?.quota ?? null)}</dd>
+            </div>
+            <div>
+              <dt style={{ color: "rgba(247,243,234,0.58)" }}>Quota used</dt>
+              <dd style={{ margin: 0 }}>{formatPercent(storage?.usageRatio ?? null)}</dd>
+            </div>
+            <div>
+              <dt style={{ color: "rgba(247,243,234,0.58)" }}>Sync status</dt>
+              <dd style={{ margin: 0 }}>
+                {sync?.status ?? "unknown"} {sync?.online === false ? "(offline)" : ""}
+                {sync?.pendingMutations ? ` - ${sync.pendingMutations} pending` : ""}
+              </dd>
             </div>
           </dl>
           <button

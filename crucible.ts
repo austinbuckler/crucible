@@ -33,6 +33,22 @@ export {
 } from "./runtime/platform.ts";
 export { useAsyncDispatch } from "./runtime/use-async-dispatch.ts";
 export { dismissSplashScreen } from "./runtime/splash.ts";
+export {
+  configureSyncStatus,
+  getStorageSnapshot,
+  getSyncSnapshot,
+  refreshStorageSnapshot,
+  requestStoragePersistence,
+  usePersistenceRequest,
+  useStorageRefresh,
+  useSyncFlush,
+  useSyncRefresh,
+  useSyncRetry,
+  type AppStorageSnapshot,
+  type AppSyncSnapshot,
+  type AppSyncStatus,
+  type SyncStatusSource,
+} from "./runtime/app-graph.ts";
 export type {
   PlatformRuntime,
   CrucibleRuntime,
@@ -58,7 +74,7 @@ export {
  *     `createEnvironment({ fetch, subscribe })` with helpers imported from
  *     `react-crucible/runtime/local-graphql.ts`
  *   - `swUpdate` → `<AppShell swUpdate={swUpdate}>` (#53)
- *   - `relayPersistence` → Relay RecordSource persistence options.
+ *   - `persistence` → app persistence options.
  *
  * Each export is independently optional. Apps that ship no config
  * file get the original zero-config bundle. Apps that export only
@@ -103,11 +119,13 @@ export type CrucibleConfig = {
     subscribe?: import("./runtime/environment.ts").SubscribeLike;
   };
   /**
-   * Relay RecordSource persistence options. `scope` is appended to the
-   * localStorage key so authenticated apps can avoid hydrating user A's
-   * cached records into user B's environment on shared devices.
+   * App persistence options. Today this configures Relay RecordSource
+   * persistence; future view/app-graph persistence should live under the same
+   * app-level namespace. `scope` is appended to persisted keys so
+   * authenticated apps can avoid hydrating user A's state into user B's
+   * environment on shared devices.
    */
-  relayPersistence?: {
+  persistence?: {
     persistStore?: boolean;
     scope?: string | null;
   };

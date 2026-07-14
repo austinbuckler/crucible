@@ -42,7 +42,7 @@ The page includes mutations so you can prove data is durable:
 - Click "Reload and read SQLite" or hard refresh the tab.
 - The changed rows should still be present. Relay RecordSource persistence is disabled for this example, so surviving rows are coming from SQLite/OPFS rather than `localStorage`.
 
-The storage panel uses `navigator.storage.estimate()` and `navigator.storage.persisted()` to show origin storage usage and whether the browser has granted persistent storage. The SQLite database path is `/crucible-relay-local.sqlite3` when OPFS is available.
+The storage panel reads `app { storage { persisted usage quota usageRatio } sync { status } }` from Crucible's Relay client graph. The button still uses a narrow browser action hook (`usePersistenceRequest()`), but the displayed state comes back through Relay. The SQLite database path is `/crucible-relay-local.sqlite3` when OPFS is available.
 
 Subscriptions use real GraphQL subscription operations. `src/app/subscription-proof.tsx` runs `subscription subscriptionProof_TodoEventsSubscription { todoEvent { ... } }` through Relay. Crucible wires Relay's `Network.create(fetch, subscribe)` hook to `createLocalGraphQLSubscribe(localGraphQL)`, and worker mode calls GraphQL.js `subscribe()` inside the worker. In this example, the Pothos mutation resolvers publish typed `TodoEvent` payloads such as `TODO_CREATED` and `TODO_TOGGLED`; the subscription payload includes event metadata (`eventId`, `kind`, `message`, `emittedAt`, `sourceTab`) that is not part of the normal todo list query.
 

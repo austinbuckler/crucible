@@ -270,41 +270,41 @@ describe("runCodegen — full pipeline", () => {
     rmSync(root, { recursive: true });
   });
 
-  test("main.tsx emission threads relayPersistence into createEnvironment", () => {
+  test("main.tsx emission threads persistence into createEnvironment", () => {
     const root = makeApp({
       "src/app/page.tsx": "export default function P(){return null}",
       "src/app/crucible.config.ts": `
         import type { CrucibleConfig } from "crucible";
-        export const relayPersistence: CrucibleConfig["relayPersistence"] = { scope: "user-1" };
+        export const persistence: CrucibleConfig["persistence"] = { scope: "user-1" };
       `,
     });
     runCodegen({ appRoot: root });
     const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
     expect(main).toContain(
-      'import { relayPersistence as __cruxRelayPersistence } from "../src/app/crucible.config.ts"',
+      'import { persistence as __cruxPersistence } from "../src/app/crucible.config.ts"',
     );
     expect(main).toContain(
-      "Crucible.createEnvironment({ persistStore: __cruxRelayPersistence?.persistStore, storeScope: __cruxRelayPersistence?.scope })",
+      "Crucible.createEnvironment({ persistStore: __cruxPersistence?.persistStore, storeScope: __cruxPersistence?.scope })",
     );
     rmSync(root, { recursive: true });
   });
 
-  test("main.tsx emission threads network and relayPersistence together", () => {
+  test("main.tsx emission threads network and persistence together", () => {
     const root = makeApp({
       "src/app/page.tsx": "export default function P(){return null}",
       "src/app/crucible.config.ts": `
         import type { CrucibleConfig } from "crucible";
         export const network: CrucibleConfig["network"] = { fetch: globalThis.fetch };
-        export const relayPersistence: CrucibleConfig["relayPersistence"] = { scope: "user-1" };
+        export const persistence: CrucibleConfig["persistence"] = { scope: "user-1" };
       `,
     });
     runCodegen({ appRoot: root });
     const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
     expect(main).toContain(
-      'import { network as __cruxNetwork, relayPersistence as __cruxRelayPersistence } from "../src/app/crucible.config.ts"',
+      'import { network as __cruxNetwork, persistence as __cruxPersistence } from "../src/app/crucible.config.ts"',
     );
     expect(main).toContain(
-      "Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe, persistStore: __cruxRelayPersistence?.persistStore, storeScope: __cruxRelayPersistence?.scope })",
+      "Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe, persistStore: __cruxPersistence?.persistStore, storeScope: __cruxPersistence?.scope })",
     );
     rmSync(root, { recursive: true });
   });

@@ -66,7 +66,7 @@ export function emitAll(
 //   - `swUpdate` (#53) — threaded into `<AppShell>` so consumers can
 //     tune the SW update lifecycle (idle threshold, observability
 //     callbacks) per the `SwUpdateBehavior` shape from #29.
-//   - `relayPersistence` — threaded into `createEnvironment` so apps can
+//   - `persistence` — threaded into `createEnvironment` so apps can
 //     scope or disable Relay RecordSource localStorage persistence without
 //     hand-editing the generated bootstrap.
 //
@@ -126,7 +126,7 @@ export function emitMainEntry(ctx: EmitContext): void {
     const hasNetwork = exports.has("network");
     const hasLocalGraphQL = exports.has("localGraphQL");
     const hasSwUpdate = exports.has("swUpdate");
-    const hasRelayPersistence = exports.has("relayPersistence");
+    const hasPersistence = exports.has("persistence");
 
     // Build the import line incrementally so we only name what the user
     // actually exports. This prevents a "no exported member" type error
@@ -135,7 +135,7 @@ export function emitMainEntry(ctx: EmitContext): void {
     if (hasNetwork) importNames.push("network as __cruxNetwork");
     if (hasLocalGraphQL) importNames.push("localGraphQL as __cruxLocalGraphQL");
     if (hasSwUpdate) importNames.push("swUpdate as __cruxSwUpdate");
-    if (hasRelayPersistence) importNames.push("relayPersistence as __cruxRelayPersistence");
+    if (hasPersistence) importNames.push("persistence as __cruxPersistence");
     const configImport =
         importNames.length > 0
             ? `import { ${importNames.join(", ")} } from "../src/app/crucible.config.ts";\n`
@@ -152,12 +152,12 @@ export function emitMainEntry(ctx: EmitContext): void {
         ? hasNetwork
             ? `const __cruxFetch = __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : __cruxNetwork?.fetch;
 const __cruxSubscribe = __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : __cruxNetwork?.subscribe;
-const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: ${hasRelayPersistence ? "__cruxRelayPersistence?.persistStore ?? " : ""}(__cruxLocalGraphQL ? false : true), storeScope: ${hasRelayPersistence ? "__cruxRelayPersistence?.scope" : "undefined"} });`
-            : `const environment = Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: ${hasRelayPersistence ? "__cruxRelayPersistence?.persistStore ?? " : ""}(__cruxLocalGraphQL ? false : true), storeScope: ${hasRelayPersistence ? "__cruxRelayPersistence?.scope" : "undefined"} });`
+const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: ${hasPersistence ? "__cruxPersistence?.persistStore ?? " : ""}(__cruxLocalGraphQL ? false : true), storeScope: ${hasPersistence ? "__cruxPersistence?.scope" : "undefined"} });`
+            : `const environment = Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: ${hasPersistence ? "__cruxPersistence?.persistStore ?? " : ""}(__cruxLocalGraphQL ? false : true), storeScope: ${hasPersistence ? "__cruxPersistence?.scope" : "undefined"} });`
         : hasNetwork
-          ? `const environment = Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe${hasRelayPersistence ? ", persistStore: __cruxRelayPersistence?.persistStore, storeScope: __cruxRelayPersistence?.scope" : ""} });`
-          : hasRelayPersistence
-            ? `const environment = Crucible.createEnvironment({ persistStore: __cruxRelayPersistence?.persistStore, storeScope: __cruxRelayPersistence?.scope });`
+          ? `const environment = Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe${hasPersistence ? ", persistStore: __cruxPersistence?.persistStore, storeScope: __cruxPersistence?.scope" : ""} });`
+          : hasPersistence
+            ? `const environment = Crucible.createEnvironment({ persistStore: __cruxPersistence?.persistStore, storeScope: __cruxPersistence?.scope });`
           : `const environment = Crucible.createEnvironment();`;
     const appShellOpen = hasSwUpdate
         ? `<Crucible.AppShell swUpdate={__cruxSwUpdate}>`
@@ -210,7 +210,7 @@ function readConfigExports(configPath: string): Set<string> {
     //   export { X }              ← bare re-export of a local binding
     //   export { foo as X }       ← aliased re-export
     // Only the known config-shape names are checked.
-    const known = ["network", "localGraphQL", "swUpdate", "relayPersistence"] as const;
+    const known = ["network", "localGraphQL", "swUpdate", "persistence"] as const;
     for (const name of known) {
         if (hasDirectExportDeclaration(source, name) || hasNamedExport(source, name)) {
             found.add(name);
@@ -400,20 +400,19 @@ function emitEntrypointModule(opts: EmitModuleOpts): void {
     const fileDir = dirname(opts.outFile);
     const sourcePathRel = relPosix(fileDir, opts.sourceFile);
 
-    // Two imports per query, intentionally split across two artifacts:
+    // Two runtime handles per query, intentionally split across two artifacts:
     //   - VALUE: `<Op>$parameters.ts` — relay-compiler's preload header
     //     (operation id + name + kind, ~20 lines). Tiny.
-    //   - TYPE: `<Op>.graphql.ts` — the full normalized AST + variable
-    //     types. Heavy. We only need the type at the entry-point boundary
-    //     (`variables: <Op>["variables"]`); types are erased at runtime.
+    //   - LAZY VALUE: `<Op>.graphql.ts` — the full normalized AST + client
+    //     resolver imports. Heavy, so keep it behind JSResource, but warm it
+    //     at navigation time independently from the page component chunk.
     //
     // The page module itself still imports `.graphql.ts` for
-    // `usePreloadedQuery(graphql\`...\`, queries.x)`, but the page is
-    // code-split per route — its AST cost is amortized over actual route
-    // visits. The entry-point is in the boot bundle (it's part of the
-    // routing manifest), so its imports stay in the critical path. With
-    // the parameters-only import, N pages contribute N × tiny-headers
-    // instead of N × full-ASTs to boot.
+    // `usePreloadedQuery(graphql\`...\`, queries.x)`. The separate artifact
+    // resource prevents a hidden waterfall for queries with Relay client
+    // resolvers: Relay can start the network from `$parameters.ts`, while
+    // the full operation/client-resolver artifact loads in parallel with the
+    // page chunk instead of being discovered only after the page import.
     //
     // `$parameters.ts` is only emitted for queries marked `@preloadable`.
     // Pages must declare their queries as preloadable (Crucible's
@@ -425,7 +424,7 @@ function emitEntrypointModule(opts: EmitModuleOpts): void {
             const parametersRel =
                 relPosix(fileDir, `${stem}$parameters`) + ".ts";
             const typeRel = relPosix(fileDir, q.artifactPath) + ".ts";
-            return `import query${i} from "${parametersRel}";\nimport type { ${q.artifactExport} } from "${typeRel}";`;
+            return `import query${i} from "${parametersRel}";\nimport type { ${q.artifactExport} } from "${typeRel}";\nconst queryArtifact${i} = JSResource("${opts.id}.query${i}", () => import("${typeRel}") as Promise<{ default: import("relay-runtime").ConcreteRequest }>);`;
         })
         .join("\n");
 
@@ -446,7 +445,7 @@ function emitEntrypointModule(opts: EmitModuleOpts): void {
                 mapped.length === 0
                     ? "{}"
                     : `{ ${mapped.map((v) => `${v}: params.${v}`).join(", ")} }`;
-            return `      ${q.fieldName}: { parameters: query${i}, variables: ${variablesLiteral} },`;
+            return `      ${q.fieldName}: { parameters: query${i}, artifact: queryArtifact${i}, variables: ${variablesLiteral} },`;
         })
         .join("\n");
 
@@ -457,7 +456,7 @@ function emitEntrypointModule(opts: EmitModuleOpts): void {
 ${opts.parsed.queries
     .map(
         (q, i) =>
-            `      ${q.fieldName}: { parameters: typeof query${i}; variables: ${q.artifactExport}["variables"] };`,
+            `      ${q.fieldName}: { parameters: typeof query${i}; artifact: typeof queryArtifact${i}; variables: ${q.artifactExport}["variables"] };`,
     )
     .join("\n")}
     }`

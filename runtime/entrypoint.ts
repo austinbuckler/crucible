@@ -62,6 +62,7 @@ export type PreloadParams = {
 
 export type QueryParameter = {
   parameters: ConcreteRequest | PreloadableConcreteRequest<OperationType>;
+  artifact?: JSResource<{ default: ConcreteRequest }>;
   variables: Variables;
 };
 

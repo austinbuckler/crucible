@@ -26,6 +26,26 @@ function computeSchemaHash(appRoot: string): string {
     return h.toString(16).padStart(8, "0");
 }
 
+export function isAppPageModule(id: string, appRoot: string): boolean {
+    const normalized = id.split(sep).join("/");
+    const appDir = join(appRoot, "src", "app").split(sep).join("/");
+    return normalized.startsWith(`${appDir}/`) &&
+        (normalized.endsWith("/page.tsx") || normalized.endsWith("/default.tsx"));
+}
+
+export function isRelayGeneratedArtifact(id: string): boolean {
+    return /\/__generated__\/.*\.graphql\.ts(?:\?.*)?$/.test(id.split(sep).join("/"));
+}
+
+export function stripRelayResolverTypeAssertions(code: string): string {
+    return code
+        .replace(
+            /^\([A-Za-z_$][\w$]* satisfies \([\s\S]*?^\) => [\s\S]*?\);\n/gm,
+            "",
+        )
+        .replace(/^\([A-Za-z_$][\w$]* satisfies .*?\);\n/gm, "");
+}
+
 export type CrucibleOptions = {
     appRoot?: string;
     // PWA configuration fallback. Prefer authoring `src/app/manifest.ts` at
@@ -185,33 +205,41 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
                 injectTo: "head" as const,
             }));
         },
-        transform: {
-            // Native Rolldown pre-filter — the JS handler only fires for
-            // .css files whose source contains `@import "tailwindcss"`. Without
-            // this, the handler was being called for every transformed module
-            // (~7k+ in a large app) just to bail out on the regex test, which
-            // tripped Rolldown's PLUGIN_TIMINGS warning.
-            filter: {
-                id: { include: /\.css$/ },
-                code: { include: /@import\s+["']tailwindcss["']/ },
-            },
-            // Inject `@source` into any CSS file that imports Tailwind. Vite's
-            // root is `.crucible/`, which shrinks Tailwind v4's
-            // auto-content-scan window — files under `src/` get missed without
-            // an explicit @source. Append it to the user's already-Tailwind-
-            // active CSS file so it lands in the right context (a sibling
-            // `sources.css` doesn't reliably work because Tailwind contexts
-            // are file-scoped).
-            handler(code, id) {
+        transform(code, id) {
+            let next = code;
+
+            if (id.endsWith(".css") && /@import\s+["']tailwindcss["']/.test(next)) {
                 const srcDir = join(appRoot, "src");
                 const fromCssFile = relative(dirname(id), srcDir)
                     .split(sep)
                     .join("/");
-                const injected =
-                    code +
+                next +=
                     `\n/* injected by crucible: ensure src/ is in Tailwind's content scope */\n@source "${fromCssFile}/**/*.{ts,tsx,js,jsx,html}";\n`;
-                return { code: injected, map: null };
-            },
+            }
+
+            if (isAppPageModule(id, appRoot)) {
+                // Keep the authoring contract (`export const query = graphql...`)
+                // for Crucible codegen, but don't expose `query` at runtime.
+                // Vite React Refresh treats non-component exports as refresh
+                // boundary hazards; the page component only needs the local
+                // binding for `usePreloadedQuery(query, data)`.
+                next = next.replace(
+                    /\bexport\s+const\s+query(\s*(?::[^=]+)?=)/g,
+                    "const query$1",
+                );
+            }
+
+            if (isRelayGeneratedArtifact(id)) {
+                // Relay emits TS-only resolver implementation assertions like:
+                //   (fooResolverType satisfies (...) => ...);
+                // esbuild strips `import type`, but `satisfies` compiles to a
+                // runtime identifier read, causing `ReferenceError` in the
+                // browser. The assertions are compile-time only and safe to
+                // remove before Vite transpiles the artifact.
+                next = stripRelayResolverTypeAssertions(next);
+            }
+
+            return next === code ? null : { code: next, map: null };
         },
         generateBundle(_options, bundle) {
             if (!pwa) return;
