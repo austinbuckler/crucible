@@ -124,20 +124,16 @@ type WorkerOutboundMessage =
   | WorkerSubscribeMessage;
 
 const workerCache = new WeakMap<LocalGraphQLWorkerOptions, Worker>();
-const workerRequestIdCache = new WeakMap<LocalGraphQLWorkerOptions, number>();
-const workerSubscriptionIdCache = new WeakMap<LocalGraphQLWorkerOptions, number>();
 const bootstrapCache = new WeakMap<LocalGraphQLFetchOptions, Promise<void>>();
+let nextWorkerRequestIdValue = 1;
+let nextWorkerSubscriptionIdValue = -1;
 
-function nextWorkerRequestId(options: LocalGraphQLWorkerOptions): number {
-  const id = workerRequestIdCache.get(options) ?? 1;
-  workerRequestIdCache.set(options, id + 1);
-  return id;
+function nextWorkerRequestId(): number {
+  return nextWorkerRequestIdValue++;
 }
 
-function nextWorkerSubscriptionId(options: LocalGraphQLWorkerOptions): number {
-  const id = workerSubscriptionIdCache.get(options) ?? -1;
-  workerSubscriptionIdCache.set(options, id - 1);
-  return id;
+function nextWorkerSubscriptionId(): number {
+  return nextWorkerSubscriptionIdValue--;
 }
 
 function runLocalGraphQLBootstrap(options: LocalGraphQLFetchOptions): Promise<void> {
@@ -493,7 +489,7 @@ export function createLocalGraphQLWorkerFetch(
 
     const body = await requestBodyToString(init.body);
     throwIfAborted(init.signal);
-    const id = nextWorkerRequestId(options);
+    const id = nextWorkerRequestId();
     const activeWorker = getWorker();
     let onAbort: (() => void) | null = null;
     return new Promise<Response>((resolve, reject) => {
@@ -601,7 +597,7 @@ export function createLocalGraphQLWorkerSubscribe(
 
   return (input, init) =>
     RelayObservable.create<GraphQLResponse>((sink) => {
-      const id = nextWorkerSubscriptionId(options);
+      const id = nextWorkerSubscriptionId();
       let activeWorker: Worker | null = null;
       let disposed = false;
       let finished = false;
@@ -660,7 +656,7 @@ export function prepareLocalGraphQL<TContext = unknown>(
   }
 
   const worker = getLocalGraphQLWorker(options);
-  const id = nextWorkerRequestId(options);
+  const id = nextWorkerRequestId();
 
   return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
