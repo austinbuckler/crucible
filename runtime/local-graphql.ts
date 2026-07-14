@@ -1,12 +1,4 @@
-import {
-  execute,
-  parse,
-  specifiedRules,
-  subscribe,
-  validate,
-  type ExecutionResult,
-  type GraphQLSchema,
-} from "graphql";
+import type { ExecutionResult, GraphQLSchema } from "graphql";
 import { Observable as RelayObservable, type GraphQLResponse } from "relay-runtime";
 import type { FetchLike, SubscribeLike } from "./environment.ts";
 
@@ -132,7 +124,21 @@ type WorkerOutboundMessage =
   | WorkerSubscribeMessage;
 
 const workerCache = new WeakMap<LocalGraphQLWorkerOptions, Worker>();
+const workerRequestIdCache = new WeakMap<LocalGraphQLWorkerOptions, number>();
+const workerSubscriptionIdCache = new WeakMap<LocalGraphQLWorkerOptions, number>();
 const bootstrapCache = new WeakMap<LocalGraphQLFetchOptions, Promise<void>>();
+
+function nextWorkerRequestId(options: LocalGraphQLWorkerOptions): number {
+  const id = workerRequestIdCache.get(options) ?? 1;
+  workerRequestIdCache.set(options, id + 1);
+  return id;
+}
+
+function nextWorkerSubscriptionId(options: LocalGraphQLWorkerOptions): number {
+  const id = workerSubscriptionIdCache.get(options) ?? -1;
+  workerSubscriptionIdCache.set(options, id - 1);
+  return id;
+}
 
 function runLocalGraphQLBootstrap(options: LocalGraphQLFetchOptions): Promise<void> {
   let promise = bootstrapCache.get(options);
@@ -261,6 +267,7 @@ export function createLocalGraphQLFetch<TContext = unknown>(
     try {
       await runLocalGraphQLBootstrap(options);
       throwIfAborted(init.signal);
+      const { execute, parse, specifiedRules, validate } = await import("graphql");
       const document = parse(request.query ?? "");
       if (shouldValidate) {
         const validationErrors = validate(options.schema, document, specifiedRules);
@@ -333,6 +340,7 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
           await runLocalGraphQLBootstrap(options);
           if (!active) return;
 
+          const { parse, specifiedRules, subscribe, validate } = await import("graphql");
           const document = parse(request.query ?? "");
           if (shouldValidate) {
             const validationErrors = validate(options.schema, document, specifiedRules);
@@ -424,7 +432,6 @@ export function createLocalGraphQLWorkerFetch(
   options: LocalGraphQLWorkerOptions,
 ): FetchLike {
   let worker: Worker | null = null;
-  let nextId = 1;
   const pending = new Map<
     number,
     {
@@ -482,12 +489,12 @@ export function createLocalGraphQLWorkerFetch(
   };
 
   return async (input, init) => {
-    const id = nextId++;
-    const activeWorker = getWorker();
     throwIfAborted(init.signal);
 
     const body = await requestBodyToString(init.body);
     throwIfAborted(init.signal);
+    const id = nextWorkerRequestId(options);
+    const activeWorker = getWorker();
     let onAbort: (() => void) | null = null;
     return new Promise<Response>((resolve, reject) => {
       onAbort = () => {
@@ -522,7 +529,6 @@ export function createLocalGraphQLWorkerSubscribe(
   options: LocalGraphQLWorkerOptions,
 ): SubscribeLike {
   let worker: Worker | null = null;
-  let nextId = -1;
   const pending = new Map<
     number,
     {
@@ -595,8 +601,8 @@ export function createLocalGraphQLWorkerSubscribe(
 
   return (input, init) =>
     RelayObservable.create<GraphQLResponse>((sink) => {
-      const id = nextId--;
-      const activeWorker = getWorker();
+      const id = nextWorkerSubscriptionId(options);
+      let activeWorker: Worker | null = null;
       let disposed = false;
       let finished = false;
       let sent = false;
@@ -607,6 +613,7 @@ export function createLocalGraphQLWorkerSubscribe(
           const body = await requestBodyToString(init.body);
           throwIfAborted(init.signal);
           if (disposed) return;
+          activeWorker = getWorker();
 
           pending.set(id, {
             next: (response) => sink.next(response),
@@ -637,7 +644,7 @@ export function createLocalGraphQLWorkerSubscribe(
         disposed = true;
         pending.delete(id);
         if (finished || !sent) return;
-        activeWorker.postMessage({
+        activeWorker?.postMessage({
           type: "crucible:local-graphql:cancel",
           id,
         } satisfies WorkerOutboundMessage);
@@ -653,7 +660,7 @@ export function prepareLocalGraphQL<TContext = unknown>(
   }
 
   const worker = getLocalGraphQLWorker(options);
-  const id = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+  const id = nextWorkerRequestId(options);
 
   return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
