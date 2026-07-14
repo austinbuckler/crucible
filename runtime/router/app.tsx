@@ -33,7 +33,6 @@ import { matchRoute, type MatchFn } from "./match.ts";
 import { applySlotCommits } from "./preserve.ts";
 import {
   disposeResolution,
-  EMPTY_RESOLUTION,
   resolveAndLoad,
   type Resolution,
 } from "./resolve.ts";
@@ -106,7 +105,16 @@ export type AppProps = {
   }) => void;
 };
 
-type RouterState = {
+type BootingRouterState = {
+  status: "booting";
+  location: ReturnType<typeof parseLocation>;
+  navSource: "init";
+  // `performance.now()` snapshot from when this navigation was initiated.
+  startedAt: number;
+};
+
+type ReadyRouterState = {
+  status: "ready";
   location: ReturnType<typeof parseLocation>;
   navSource: NavSource;
   resolution: Resolution;
@@ -115,6 +123,8 @@ type RouterState = {
   // observers can compute resolve-time deltas.
   startedAt: number;
 };
+
+type RouterState = BootingRouterState | ReadyRouterState;
 
 export function App({
   routes,
@@ -189,9 +199,9 @@ export function App({
     const startedAt = performance.now();
     const location = parseLocation(new URL(window.location.href));
     return {
+      status: "booting",
       location,
       navSource: "init",
-      resolution: EMPTY_RESOLUTION,
       startedAt,
     };
   });
@@ -204,6 +214,7 @@ export function App({
       lastSlots: new Map(),
     }, match);
     setState({
+      status: "ready",
       location,
       navSource: "init",
       resolution,
@@ -217,7 +228,7 @@ export function App({
   // Update preservation refs AFTER commit so a discarded render's
   // matches don't poison the "last seen" state.
   useEffect(() => {
-    if (state.resolution === EMPTY_RESOLUTION) return;
+    if (state.status !== "ready") return;
     if (state.resolution.mainCommit) {
       lastMainRef.current = state.resolution.mainCommit;
     }
@@ -239,14 +250,14 @@ export function App({
       resolvedAt,
       durationMs: resolvedAt - state.startedAt,
     });
-  }, [state.resolution, state.location, state.startedAt, buckets.allSlots]);
+  }, [state, buckets.allSlots]);
 
   // Release committed `loadQuery` retains when the rendered resolution is
   // replaced. Do this in effect setup, not cleanup: React StrictMode replays
   // effect cleanup/setup in dev, and cleanup-based disposal would release the
   // still-rendered PreloadedQuery refs during that replay.
   useEffect(() => {
-    if (state.resolution === EMPTY_RESOLUTION) return;
+    if (state.status !== "ready") return;
     if (unmountDisposeTimerRef.current) {
       clearTimeout(unmountDisposeTimerRef.current);
       unmountDisposeTimerRef.current = null;
@@ -259,7 +270,7 @@ export function App({
     if (pendingResolutionRef.current === state.resolution) {
       pendingResolutionRef.current = null;
     }
-  }, [state.resolution]);
+  }, [state]);
 
   useEffect(() => {
     return () => {
@@ -331,6 +342,7 @@ export function App({
         // resolve, then atomically swaps to the new tree.
         startTransition(() => {
           setState({
+            status: "ready",
             location: newLocation,
             navSource: source,
             resolution,
@@ -416,8 +428,6 @@ export function App({
     [onError],
   );
 
-  const isBootstrapping = state.resolution === EMPTY_RESOLUTION;
-
   return (
     <PlatformProvider value={environment.platform}>
       <RelayEnvironmentProvider environment={environment.relay}>
@@ -427,7 +437,7 @@ export function App({
             onError={handleError}
           >
             <NotFoundBoundary fallback={<DefaultNotFound />}>
-              {isBootstrapping ? (
+              {state.status === "booting" ? (
                 <DefaultLoading />
               ) : (
                 <Suspense fallback={<DefaultLoading />}>
