@@ -317,16 +317,27 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
     RelayObservable.create<GraphQLResponse>((sink) => {
       let active = true;
       let iterator: AsyncIterator<ExecutionResult> | null = null;
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      init.signal?.addEventListener("abort", onAbort, { once: true });
+      if (init.signal?.aborted) controller.abort();
+      let resolveAbort: (() => void) | null = null;
+      const abortPromise = new Promise<IteratorResult<ExecutionResult>>((resolve) => {
+        resolveAbort = () => resolve({ done: true, value: undefined });
+      });
+      const requestInit = { ...init, signal: controller.signal };
 
       void (async () => {
         try {
-          const method = init.method?.toUpperCase() ?? "GET";
+          throwIfAborted(controller.signal);
+          const method = requestInit.method?.toUpperCase() ?? "GET";
           if (method !== "POST") {
             sink.error(new Error("Local GraphQL subscriptions only accept POST requests."));
             return;
           }
 
-          const rawBody = await requestBodyToString(init.body);
+          const rawBody = await requestBodyToString(requestInit.body);
+          throwIfAborted(controller.signal);
           const request = parseLocalGraphQLRequest(rawBody);
           if (request instanceof Error) {
             sink.error(request);
@@ -335,6 +346,7 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
 
           await runLocalGraphQLBootstrap(options);
           if (!active) return;
+          throwIfAborted(controller.signal);
 
           const { parse, specifiedRules, subscribe, validate } = await import("graphql");
           const document = parse(request.query ?? "");
@@ -351,11 +363,12 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
             typeof options.context === "function"
               ? await (options.context as (args: LocalGraphQLContextFactoryArgs) => MaybePromise<TContext>)({
                   input,
-                  init,
+                  init: requestInit,
                   request,
                 })
               : options.context;
           if (!active) return;
+          throwIfAborted(controller.signal);
 
           const result = await subscribe({
             schema: options.schema,
@@ -379,7 +392,7 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
             return;
           }
           while (active) {
-            const next = await iterator.next();
+            const next = await Promise.race([iterator.next(), abortPromise]);
             if (next.done) break;
             sink.next(next.value as GraphQLResponse);
           }
@@ -392,6 +405,9 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
 
       return () => {
         active = false;
+        controller.abort();
+        init.signal?.removeEventListener("abort", onAbort);
+        resolveAbort?.();
         void iterator?.return?.();
       };
     });
@@ -703,7 +719,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
   const localFetch = createLocalGraphQLFetch(options);
   const localSubscribe = createLocalGraphQLSubscribe(options);
   const cancelled = new Set<number>();
-  const subscriptions = new Map<number, { unsubscribe: () => void }>();
+  const subscriptions = new Map<number, { unsubscribe: () => void; abort: () => void }>();
   const requestControllers = new Map<number, AbortController>();
   const scope = globalThis as unknown as LocalGraphQLWorkerScope;
 
@@ -719,6 +735,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
         requestControllers.delete(message.id);
         const subscription = subscriptions.get(message.id);
         if (subscription) {
+          subscription.abort();
           subscription.unsubscribe();
           subscriptions.delete(message.id);
           cancelled.delete(message.id);
@@ -761,10 +778,12 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
               return;
             }
 
+            const controller = new AbortController();
             const subscription = localSubscribe(message.input, {
               method: message.init.method,
               headers: message.init.headers,
               body: message.init.body,
+              signal: controller.signal,
             }).subscribe({
               next: (payload) => {
                 if (cancelled.has(message.id)) return;
@@ -801,7 +820,10 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
                 } satisfies WorkerInboundMessage);
               },
             });
-            subscriptions.set(message.id, subscription);
+            subscriptions.set(message.id, {
+              unsubscribe: () => subscription.unsubscribe(),
+              abort: () => controller.abort(),
+            });
           } catch (err) {
             if (cancelled.has(message.id)) {
               cancelled.delete(message.id);
