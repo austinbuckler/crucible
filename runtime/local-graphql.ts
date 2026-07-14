@@ -242,6 +242,7 @@ export function createLocalGraphQLFetch<TContext = unknown>(
 
   const shouldValidate = options.validate ?? true;
   return async (input, init) => {
+    throwIfAborted(init.signal);
     const method = init.method?.toUpperCase() ?? "GET";
     if (method !== "POST") {
       return jsonResponse(
@@ -251,6 +252,7 @@ export function createLocalGraphQLFetch<TContext = unknown>(
     }
 
     const rawBody = await requestBodyToString(init.body);
+    throwIfAborted(init.signal);
     const request = parseLocalGraphQLRequest(rawBody);
     if (request instanceof Error) {
       return jsonResponse({ errors: [{ message: request.message }] }, { status: 400 });
@@ -258,6 +260,7 @@ export function createLocalGraphQLFetch<TContext = unknown>(
 
     try {
       await runLocalGraphQLBootstrap(options);
+      throwIfAborted(init.signal);
       const document = parse(request.query ?? "");
       if (shouldValidate) {
         const validationErrors = validate(options.schema, document, specifiedRules);
@@ -274,6 +277,7 @@ export function createLocalGraphQLFetch<TContext = unknown>(
               request,
             })
           : options.context;
+      throwIfAborted(init.signal);
 
       const result = (await execute({
         schema: options.schema,
@@ -286,6 +290,9 @@ export function createLocalGraphQLFetch<TContext = unknown>(
 
       return jsonResponse(result);
     } catch (err) {
+      if (init.signal?.aborted || (err instanceof Error && err.name === "AbortError")) {
+        throw err instanceof Error ? err : makeAbortError();
+      }
       const message = err instanceof Error ? err.message : String(err);
       return jsonResponse({ errors: [{ message }] });
     }
@@ -405,6 +412,10 @@ function normalizeWorkerError(error: WorkerErrorMessage["error"]): Error {
   return err;
 }
 
+function throwIfAborted(signal: AbortSignal | null | undefined): void {
+  if (signal?.aborted) throw makeAbortError();
+}
+
 export function createLocalGraphQLWorkerFetch(
   options: LocalGraphQLWorkerOptions,
 ): FetchLike {
@@ -447,6 +458,16 @@ export function createLocalGraphQLWorkerFetch(
             headers: message.headers,
           }),
         );
+      });
+      const rejectPending = (error: Error) => {
+        for (const entry of pending.values()) entry.reject(error);
+        pending.clear();
+      };
+      worker.addEventListener("error", (event) => {
+        rejectPending(new Error(event.message || "Local GraphQL worker failed."));
+      });
+      worker.addEventListener("messageerror", () => {
+        rejectPending(new Error("Local GraphQL worker sent an unreadable message."));
       });
     }
     return worker;
@@ -499,6 +520,7 @@ export function createLocalGraphQLWorkerSubscribe(
       next: (response: GraphQLResponse) => void;
       complete: () => void;
       error: (error: Error) => void;
+      finish: () => void;
     }
   >();
 
@@ -521,12 +543,14 @@ export function createLocalGraphQLWorkerSubscribe(
 
         if (message.type === "crucible:local-graphql:error") {
           pending.delete(message.id);
+          entry.finish();
           entry.error(normalizeWorkerError(message.error));
           return;
         }
 
         if (message.type === "crucible:local-graphql:subscription:complete") {
           pending.delete(message.id);
+          entry.finish();
           entry.complete();
           return;
         }
@@ -535,8 +559,22 @@ export function createLocalGraphQLWorkerSubscribe(
           entry.next(JSON.parse(message.body) as GraphQLResponse);
         } catch (err) {
           pending.delete(message.id);
+          entry.finish();
           entry.error(err instanceof Error ? err : new Error(String(err)));
         }
+      });
+      const errorPending = (error: Error) => {
+        for (const entry of pending.values()) {
+          entry.finish();
+          entry.error(error);
+        }
+        pending.clear();
+      };
+      worker.addEventListener("error", (event) => {
+        errorPending(new Error(event.message || "Local GraphQL worker failed."));
+      });
+      worker.addEventListener("messageerror", () => {
+        errorPending(new Error("Local GraphQL worker sent an unreadable message."));
       });
     }
     return worker;
@@ -547,6 +585,7 @@ export function createLocalGraphQLWorkerSubscribe(
       const id = nextId--;
       const activeWorker = getWorker();
       let disposed = false;
+      let finished = false;
 
       void (async () => {
         try {
@@ -558,6 +597,9 @@ export function createLocalGraphQLWorkerSubscribe(
             next: (response) => sink.next(response),
             complete: () => sink.complete(),
             error: (error) => sink.error(error),
+            finish: () => {
+              finished = true;
+            },
           });
 
           activeWorker.postMessage({
@@ -578,6 +620,7 @@ export function createLocalGraphQLWorkerSubscribe(
       return () => {
         disposed = true;
         pending.delete(id);
+        if (finished) return;
         activeWorker.postMessage({
           type: "crucible:local-graphql:cancel",
           id,
@@ -640,6 +683,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
   const localSubscribe = createLocalGraphQLSubscribe(options);
   const cancelled = new Set<number>();
   const subscriptions = new Map<number, { unsubscribe: () => void }>();
+  const requestControllers = new Map<number, AbortController>();
   const scope = globalThis as unknown as LocalGraphQLWorkerScope;
 
   scope.addEventListener(
@@ -650,6 +694,8 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
 
       if (message.type === "crucible:local-graphql:cancel") {
         cancelled.add(message.id);
+        requestControllers.get(message.id)?.abort();
+        requestControllers.delete(message.id);
         subscriptions.get(message.id)?.unsubscribe();
         subscriptions.delete(message.id);
         return;
@@ -751,13 +797,21 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
 
       if (message.type !== "crucible:local-graphql:request") return;
 
+      const controller = new AbortController();
+      requestControllers.set(message.id, controller);
+
       void (async () => {
         try {
           await runLocalGraphQLBootstrap(options);
+          if (cancelled.has(message.id)) {
+            cancelled.delete(message.id);
+            return;
+          }
           const response = await localFetch(message.input, {
             method: message.init.method,
             headers: message.init.headers,
             body: message.init.body,
+            signal: controller.signal,
           });
           const body = await response.text();
           if (cancelled.has(message.id)) {
@@ -773,6 +827,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
             body,
           } satisfies WorkerInboundMessage);
         } catch (err) {
+          if (controller.signal.aborted) return;
           if (cancelled.has(message.id)) {
             cancelled.delete(message.id);
             return;
@@ -785,6 +840,8 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
               message: err instanceof Error ? err.message : String(err),
             },
           } satisfies WorkerInboundMessage);
+        } finally {
+          requestControllers.delete(message.id);
         }
       })();
     },
