@@ -762,6 +762,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
   const localSubscribe = createLocalGraphQLSubscribe(options);
   const cancelled = new Set<WorkerMessageId>();
   const subscriptions = new Map<WorkerMessageId, { unsubscribe: () => void; abort: () => void }>();
+  const pendingSubscriptions = new Set<WorkerMessageId>();
   const requestControllers = new Map<WorkerMessageId, AbortController>();
   const scope = globalThis as unknown as LocalGraphQLWorkerScope;
 
@@ -772,15 +773,25 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
       if (!message) return;
 
       if (message.type === "crucible:local-graphql:cancel") {
-        cancelled.add(message.id);
-        requestControllers.get(message.id)?.abort();
-        requestControllers.delete(message.id);
+        const requestController = requestControllers.get(message.id);
+        if (requestController) {
+          cancelled.add(message.id);
+          requestController.abort();
+          requestControllers.delete(message.id);
+          return;
+        }
+
         const subscription = subscriptions.get(message.id);
         if (subscription) {
           subscription.abort();
           subscription.unsubscribe();
           subscriptions.delete(message.id);
-          cancelled.delete(message.id);
+          pendingSubscriptions.delete(message.id);
+          return;
+        }
+
+        if (pendingSubscriptions.has(message.id)) {
+          cancelled.add(message.id);
         }
         return;
       }
@@ -812,11 +823,13 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
       }
 
       if (message.type === "crucible:local-graphql:subscribe") {
+        pendingSubscriptions.add(message.id);
         void (async () => {
           try {
             await runLocalGraphQLBootstrap(options);
             if (cancelled.has(message.id)) {
               cancelled.delete(message.id);
+              pendingSubscriptions.delete(message.id);
               return;
             }
 
@@ -866,7 +879,9 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
               unsubscribe: () => subscription.unsubscribe(),
               abort: () => controller.abort(),
             });
+            pendingSubscriptions.delete(message.id);
           } catch (err) {
+            pendingSubscriptions.delete(message.id);
             if (cancelled.has(message.id)) {
               cancelled.delete(message.id);
               return;
