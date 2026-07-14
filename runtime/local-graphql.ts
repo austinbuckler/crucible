@@ -841,6 +841,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
             },
           } satisfies WorkerInboundMessage);
         } finally {
+          if (controller.signal.aborted) cancelled.delete(message.id);
           requestControllers.delete(message.id);
         }
       })();
