@@ -5,6 +5,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -32,6 +33,7 @@ import { matchRoute, type MatchFn } from "./match.ts";
 import { applySlotCommits } from "./preserve.ts";
 import {
   disposeResolution,
+  EMPTY_RESOLUTION,
   resolveAndLoad,
   type Resolution,
 } from "./resolve.ts";
@@ -169,10 +171,9 @@ export function App({
     null,
   );
 
-  // Initial state: synchronously match + load for the URL we boot at.
-  // The useState initializer runs once per mount (twice in StrictMode
-  // dev, which is fine — Relay's loadQuery is idempotent for the same
-  // op+vars and the discarded mount disposes its component subtree).
+  // Initial state starts inert; the layout effect below performs the first
+  // side-effectful resolve/load after commit. This avoids render-time
+  // `loadQuery` leaks under React StrictMode's dev-only double invocation.
   // `useTransition` over bare `startTransition` — same scheduling
   // behavior, plus we surface `isPending` through the navigation
   // context so consumers can render a progress bar / dim outgoing
@@ -182,25 +183,41 @@ export function App({
   // > transition is ongoing, you need useTransition instead.
   // — react.dev/reference/react/startTransition#caveats)
   const [isPending, startTransition] = useTransition();
+  const match = matcher ?? matchRoute;
 
   const [state, setState] = useState<RouterState>(() => {
     const startedAt = performance.now();
     const location = parseLocation(new URL(window.location.href));
-    const resolution = resolveAndLoad(buckets, location, "init", env, {
-      lastMain: null,
-      lastSlots: new Map(),
-    });
     return {
       location,
       navSource: "init",
-      resolution,
+      resolution: EMPTY_RESOLUTION,
       startedAt,
     };
   });
 
+  useLayoutEffect(() => {
+    const startedAt = state.startedAt;
+    const location = state.location;
+    const resolution = resolveAndLoad(buckets, location, "init", env, {
+      lastMain: null,
+      lastSlots: new Map(),
+    }, match);
+    setState({
+      location,
+      navSource: "init",
+      resolution,
+      startedAt,
+    });
+    return () => {
+      disposeResolution(resolution);
+    };
+  }, []);
+
   // Update preservation refs AFTER commit so a discarded render's
   // matches don't poison the "last seen" state.
   useEffect(() => {
+    if (state.resolution === EMPTY_RESOLUTION) return;
     if (state.resolution.mainCommit) {
       lastMainRef.current = state.resolution.mainCommit;
     }
@@ -229,6 +246,7 @@ export function App({
   // effect cleanup/setup in dev, and cleanup-based disposal would release the
   // still-rendered PreloadedQuery refs during that replay.
   useEffect(() => {
+    if (state.resolution === EMPTY_RESOLUTION) return;
     if (unmountDisposeTimerRef.current) {
       clearTimeout(unmountDisposeTimerRef.current);
       unmountDisposeTimerRef.current = null;
@@ -298,7 +316,7 @@ export function App({
       const resolution = resolveAndLoad(buckets, newLocation, source, env, {
         lastMain: lastMainRef.current,
         lastSlots: lastSlotsRef.current,
-      });
+      }, match);
       pendingResolutionRef.current = resolution;
       const commit = () => {
         historyOp();
@@ -322,12 +340,10 @@ export function App({
       };
       withViewTransition(commit, viewTransitions);
     },
-    [buckets, env, viewTransitions],
+    [buckets, env, match, viewTransitions],
   );
 
   // Stable matcher reference for prefetch — caller can override.
-  const match = matcher ?? matchRoute;
-
   const navigate = useCallback(
     (to: string, options?: { replace?: boolean }) => {
       assertRouterTarget(to);

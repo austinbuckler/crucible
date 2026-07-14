@@ -202,8 +202,8 @@ function readPreloadableGraphqlTag(
 // artifact path. Two strategies, in order:
 //
 //   1. Look for an explicit `import { <OpName> } from "<path>/<OpName>.graphql"`
-//      in the page. Wins when the user happens to type-import the
-//      generated artifact (e.g. for a custom artifactDirectory).
+//      or `...graphql.ts` in the page. Wins when the user happens to
+//      type-import the generated artifact (e.g. for a custom artifactDirectory).
 //   2. Fall back to relay-compiler's colocated default:
 //      `<pageDir>/__generated__/<OpName>.graphql.ts`. The exported query's
 //      operation name is the durable pointer; users shouldn't have to author
@@ -216,11 +216,15 @@ function resolvePreloadableQuery(
 ): QueryField {
   const opName = preloadable.operationName;
   for (const [_local, imp] of importMap) {
-    if (imp.moduleSpecifier.endsWith(`${opName}.graphql`) && imp.exported === opName) {
+    const matchesArtifact =
+      imp.moduleSpecifier.endsWith(`${opName}.graphql`) ||
+      imp.moduleSpecifier.endsWith(`${opName}.graphql.ts`);
+    if (matchesArtifact && imp.exported === opName) {
+      const moduleSpecifier = imp.moduleSpecifier.replace(/\.ts$/, "");
       return {
         fieldName: "data",
         artifactExport: opName,
-        artifactPath: resolve(pageDir, imp.moduleSpecifier),
+        artifactPath: resolve(pageDir, moduleSpecifier),
       };
     }
   }

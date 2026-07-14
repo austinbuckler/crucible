@@ -118,6 +118,24 @@ describe("resolveAndLoad — main route resolution", () => {
     });
     expect(rPop.main).toBeNull();
   });
+
+  test("uses the supplied matcher for actual resolution", () => {
+    const orders = makeRoute([{ kind: "literal", value: "orders" }]);
+    const buckets = bucketRoutes([orders]);
+    const customMatcher = (routes: typeof buckets.mainRoutes, pathname: string) =>
+      pathname === "/ORDERS" ? { route: routes[0]!, params: {} } : null;
+
+    const r = resolveAndLoad(
+      buckets,
+      loc("/ORDERS"),
+      "init",
+      fakeEnv,
+      NO_PREV,
+      customMatcher,
+    );
+
+    expect(r.main?.route).toBe(orders);
+  });
 });
 
 describe("resolveAndLoad — slot resolution", () => {

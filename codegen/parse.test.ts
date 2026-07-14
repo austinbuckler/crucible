@@ -51,6 +51,21 @@ describe("parsePage — direct exports", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("honors explicit artifact imports with .graphql.ts extension", () => {
+    const { file, dir } = writePage(
+      `import { graphql } from "react-relay";
+       import type { page_HomeQuery } from "../artifacts/page_HomeQuery.graphql.ts";
+       export const query = graphql\`query page_HomeQuery @preloadable { __typename }\`;
+       export default function Page() { return null }`,
+      [{ name: "unused" }],
+    );
+    const r = parsePage(file);
+    expect(r.queries[0]!.artifactPath).toMatch(
+      /artifacts\/page_HomeQuery\.graphql$/,
+    );
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("requires exported page queries to be graphql tags", () => {
     const { file, dir } = writePage(
       `export const query = "not graphql";

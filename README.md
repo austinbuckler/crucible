@@ -61,7 +61,7 @@ export default {
 
 ```tsx
 // src/app/layout.tsx
-import * as Crucible from "crucible";
+import * as Crucible from "react-crucible/crucible";
 import type { ReactNode } from "react";
 
 export const metadata: Crucible.Metadata = {
@@ -82,7 +82,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
 ```tsx
 // src/app/page.tsx
-import * as Crucible from "crucible";
+import * as Crucible from "react-crucible/crucible";
 import { graphql, usePreloadedQuery } from "react-relay";
 import type { page_HomeQuery } from "./__generated__/page_HomeQuery.graphql";
 
