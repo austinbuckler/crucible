@@ -355,15 +355,7 @@ describe("EMPTY_RESOLUTION", () => {
 });
 
 describe("disposeResolution — concurrent-nav cancellation contract", () => {
-  test("releases every queryRef across main + slots + sub-entrypoints", () => {
-    const sub = {
-      ...fakeEntrypoint("sub"),
-      getPreloadProps: () => ({
-        queries: {
-          side: { parameters: {} as never, variables: {} as never },
-        },
-      }),
-    };
+  test("releases every queryRef across main + slots", () => {
     const main = makeRoute([{ kind: "literal", value: "x" }], {
       entrypoint: {
         ...fakeEntrypoint("main"),
@@ -373,8 +365,6 @@ describe("disposeResolution — concurrent-nav cancellation contract", () => {
             b: { parameters: {} as never, variables: {} as never },
           },
         }),
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        entryPoints: { sub: sub as any },
       },
     });
     const slot = makeRoute([{ kind: "literal", value: "x" }], {
@@ -398,8 +388,8 @@ describe("disposeResolution — concurrent-nav cancellation contract", () => {
       { lastMain: null, lastSlots: new Map() },
     );
 
-    // 2 main + 1 sub + 1 slot = 4 queryRefs.
-    expect(activeRefs.length).toBe(4);
+    // 2 main + 1 slot = 3 queryRefs.
+    expect(activeRefs.length).toBe(3);
     expect(activeRefs.every((r) => !r.disposed)).toBe(true);
 
     disposeResolution(res);
@@ -480,7 +470,7 @@ describe("disposeResolution — concurrent-nav cancellation contract", () => {
 });
 
 describe("resolveAndLoad — adversarial inputs", () => {
-  test("route with no queries + no sub-entrypoints — clean resolution shape", () => {
+  test("route with no queries has a clean resolution shape", () => {
     const route = makeRoute([{ kind: "literal", value: "static" }]);
     const buckets = bucketRoutes([route]);
     const res = resolveAndLoad(
@@ -492,7 +482,6 @@ describe("resolveAndLoad — adversarial inputs", () => {
     );
     expect(res.main?.route).toBe(route);
     expect(res.mainLoaded?.preloaded).toEqual({});
-    expect(res.mainLoaded?.entryPoints).toEqual({});
     expect(activeRefs.length).toBe(0);
   });
 

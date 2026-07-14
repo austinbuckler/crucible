@@ -101,7 +101,7 @@ Reads `.crucible/_internal/manifest.json` (the snapshot codegen wrote) and resol
 
 ### `buildStart()`
 
-Fires `runCodegen({ appRoot })`. This means by the time Vite starts module resolution, `.crucible/` exists with `routes.ts`, `entrypoints/*.ts`, `main.tsx`, `index.html`, and `registry.d.ts`. Codegen is synchronous; the build doesn't proceed until it finishes.
+Fires `runCodegen({ appRoot })`. This means by the time Vite starts module resolution, `.crucible/` exists with `routes.ts`, `entrypoints/*.ts`, `main.tsx`, and `index.html`. Codegen is synchronous; the build doesn't proceed until it finishes.
 
 ### `transformIndexHtml()`
 
@@ -146,12 +146,12 @@ Also serves a no-op `/sw.js` so registering the SW in dev doesn't 404.
 Codegen output is in `.crucible/`. If routes aren't resolving as expected:
 
 1. `cat .crucible/routes.ts` — does the route exist?
-2. `cat .crucible/registry.d.ts` — does the type registry have it?
+2. `cat .crucible/routes.ts` — does the route manifest have it?
 3. `cat .crucible/entrypoints/<id>.ts` — does the entrypoint look right?
 
 If a query isn't being preloaded:
 
-1. Check the page exports a `Queries` type alias (not an interface, not inline).
+1. Check the page exports `query = graphql\`... @preloadable ...\``.
 2. Check the GraphQL operation has `@preloadable`.
 3. `bun run codegen:relay` — did relay-compiler emit the artifact?
 4. `bun run codegen:crucible` — did Crucible's emit pick it up?

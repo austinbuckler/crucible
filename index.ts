@@ -136,6 +136,8 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
             },
         },
         config() {
+            const manifestConfig = loadManifestConfig();
+            const resolvedPwa = manifestConfig ? resolvePWA(manifestConfig) : null;
             // Expose build-time URL constants the AppShell reads. Both are null
             // when PWA isn't configured, so AppShell skips registering a SW and
             // skips emitting a `<link rel="manifest">` that would 404.
@@ -147,10 +149,10 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
             return {
                 define: {
                     "import.meta.env.CRUCIBLE_SW_URL": JSON.stringify(
-                        pwa ? "/sw.js" : null,
+                        resolvedPwa ? "/sw.js" : null,
                     ),
                     "import.meta.env.CRUCIBLE_MANIFEST_URL": JSON.stringify(
-                        pwa ? "/manifest.webmanifest" : null,
+                        resolvedPwa ? "/manifest.webmanifest" : null,
                     ),
                     "import.meta.env.CRUCIBLE_SCHEMA_HASH": JSON.stringify(
                         computeSchemaHash(appRoot),
@@ -293,6 +295,11 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
                 if (!/\.(tsx|ts|graphql)$/.test(file)) return;
                 if (file === configPath) {
                     regen("config-change");
+                    server.ws.send({ type: "full-reload" });
+                    return;
+                }
+                if (file.endsWith(`${sep}page.tsx`) || file.endsWith(`${sep}default.tsx`)) {
+                    regen("page-change");
                     server.ws.send({ type: "full-reload" });
                     return;
                 }

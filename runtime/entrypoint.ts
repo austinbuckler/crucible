@@ -1,4 +1,5 @@
 import type { StandardSchemaV1 } from "@standard-schema/spec";
+import type { PreloadedQuery } from "react-relay";
 import type {
   ConcreteRequest,
   OperationType,
@@ -64,54 +65,37 @@ export type QueryParameter = {
   variables: Variables;
 };
 
+type PageData<TQueries extends Record<string, QueryParameter>> =
+  TQueries extends {
+    data: {
+      parameters:
+        | ConcreteRequest
+        | PreloadableConcreteRequest<infer TOperation extends OperationType>;
+    };
+  }
+    ? PreloadedQuery<TOperation>
+    : undefined;
+
 import type { ComponentType } from "react";
 
 export type PageModule<
   TQueries extends Record<string, QueryParameter>,
   TParams = Record<string, string>,
   TSearch = URLSearchParams,
-  TEntryPoints = Record<string, unknown>,
 > = {
   default: ComponentType<{
-    queries: TQueries;
+    data: PageData<TQueries>;
     params: TParams;
     search: TSearch;
-    entryPoints: TEntryPoints;
   }>;
   metadata?: Metadata;
   // When present, must be a Standard Schema-compliant validator. Crucible
   // calls its `~standard.validate` against URLSearchParams entries on every
-  // navigation and types `PageProps['search']` as the schema's output.
+  // navigation. Page props receive the schema's output as `search`.
   searchParams?: StandardSchemaV1;
-};
-
-// Sub-entrypoint module shape — a non-page tsx file that declares its own
-// Queries. Receives only `queries` + (optionally) nested `entryPoints` —
-// no params / search (those are page-scoped).
-export type SubModule<
-  TQueries extends Record<string, QueryParameter>,
-  TEntryPoints = Record<string, unknown>,
-> = {
-  default: ComponentType<{
-    queries: TQueries;
-    entryPoints: TEntryPoints;
-  }>;
-  metadata?: Metadata;
 };
 
 export type EntryPoint<TQueries extends Record<string, QueryParameter>> = {
   root: JSResource<PageModule<TQueries>>;
   getPreloadProps: (preload: PreloadParams) => { queries: TQueries };
-  // Sub-entrypoints declared by the page's `EntryPoints` type. Each is a
-  // standalone EntryPoint definition. The router loads them in parallel
-  // with the page's queries; pages render them via `<EntryPointContainer>`.
-  entryPoints?: Record<string, SubEntryPoint<Record<string, QueryParameter>>>;
-};
-
-// A non-page entrypoint. Same preload mechanics as a page entrypoint, but
-// the loaded module shape is `SubModule` (no params/search).
-export type SubEntryPoint<TQueries extends Record<string, QueryParameter>> = {
-  root: JSResource<SubModule<TQueries>>;
-  getPreloadProps: (preload: PreloadParams) => { queries: TQueries };
-  entryPoints?: Record<string, SubEntryPoint<Record<string, QueryParameter>>>;
 };

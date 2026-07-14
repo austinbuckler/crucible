@@ -5,7 +5,6 @@ import type {
   EntryPoint,
   JSResource,
   QueryParameter,
-  SubEntryPoint,
 } from "../entrypoint.ts";
 import type { Metadata } from "../metadata.tsx";
 
@@ -96,17 +95,8 @@ export type Match = {
 // fire on soft nav) and scroll/focus behavior (skip on init).
 export type NavSource = "init" | "soft" | "pop";
 
-// A loaded sub-entrypoint: its preloaded queries plus any nested
-// sub-entrypoints, both fired in parallel with the parent.
-export type LoadedSubEntrypoint = {
-  ep: SubEntryPoint<Record<string, QueryParameter>>;
-  preloaded: Record<string, PreloadedQuery<never>>;
-  entryPoints: Record<string, LoadedSubEntrypoint>;
-};
-
-// A loaded entrypoint: route + preloaded queries + sub-entrypoints.
+// A loaded entrypoint: route + preloaded queries.
 export type LoadedEntrypoint = {
   route: RouteRecord;
   preloaded: Record<string, PreloadedQuery<never>>;
-  entryPoints: Record<string, LoadedSubEntrypoint>;
 };

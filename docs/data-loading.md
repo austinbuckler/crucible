@@ -12,7 +12,7 @@ nav to /orders/123
 matchRoute → match { route, params: { id: "123" } }
    ↓
 match.route.entrypoint.getPreloadProps({ params, search })
-   ↓ returns { queries: { orders: { parameters, variables } } }
+   ↓ returns { queries: { data: { parameters, variables } } }
    ↓
 loadQuery(env, parameters, variables, { fetchPolicy: "store-and-network" })
    ↓
@@ -24,9 +24,9 @@ React commit
    ↓
 <PageRenderer> reads the chunk via JSResource (suspends if not ready)
    ↓
-Page component receives { queries: { orders: PreloadedQuery<...> } }
+Page component receives { data: PreloadedQuery<...> }
    ↓
-const data = usePreloadedQuery(graphql`...`, queries.orders)
+const result = usePreloadedQuery(query, data)
    ↓
 data renders (suspends if query still in-flight)
 ```
@@ -39,27 +39,26 @@ import * as Crucible from "crucible";
 import { graphql, usePreloadedQuery } from "react-relay";
 import type { OrderDetailQuery } from "./__generated__/OrderDetailQuery.graphql";
 
-// 1. Declare the queries this page needs.
-export type Queries = { order: OrderDetailQuery };
+// 1. Declare the page query.
+export const query = graphql`
+  query OrderDetailQuery($id: ID!) @preloadable {
+    order(id: $id) { id, status, lines { sku, qty } }
+  }
+`;
 
 // 2. Optional metadata
 export const metadata: Crucible.Metadata = { title: "Order" };
 
-// 3. The component reads from `queries`, which crucible's runtime
-//    populates with the loaded PreloadedQuery for each declared key.
+// 3. The component reads from `data`, which Crucible preloads for the route.
 export default function OrderDetailPage({
-  queries,
+  data,
   params,
-}: Crucible.PageProps<"/orders/[id]">) {
-  const data = usePreloadedQuery(
-    graphql`
-      query OrderDetailQuery($id: ID!) @preloadable {
-        order(id: $id) { id, status, lines { sku, qty } }
-      }
-    `,
-    queries.order,
-  );
-  return <pre>{JSON.stringify(data.order, null, 2)}</pre>;
+}: {
+  data: import("react-relay").PreloadedQuery<OrderDetailQuery>;
+  params: { id: string };
+}) {
+  const result = usePreloadedQuery(query, data);
+  return <pre>{JSON.stringify(result.order, null, 2)}</pre>;
 }
 ```
 
@@ -67,16 +66,16 @@ The `@preloadable` directive on the query is required — relay-compiler emits a
 
 ## What codegen does for you
 
-For each `page.tsx`, codegen reads the `Queries` type and emits an entrypoint module like this:
+For each `page.tsx`, codegen reads the direct `query` export and emits an entrypoint module like this:
 
 ```tsx
 // .crucible/entrypoints/orders.[id].ts (generated)
 import { JSResource, type EntryPoint } from "react-crucible/runtime/entrypoint.ts";
-import query0 from "../../src/app/orders/[id]/__generated__/OrderDetailQuery.graphql.ts";
+import query0 from "../../src/app/orders/[id]/__generated__/OrderDetailQuery$parameters.ts";
 import type { OrderDetailQuery } from "../../src/app/orders/[id]/__generated__/OrderDetailQuery.graphql.ts";
 
 type Queries = {
-  order: { parameters: typeof query0; variables: OrderDetailQuery["variables"] };
+  data: { parameters: typeof query0; variables: OrderDetailQuery["variables"] };
 };
 
 const entrypoint: EntryPoint<Queries> = {
@@ -85,7 +84,7 @@ const entrypoint: EntryPoint<Queries> = {
   ),
   getPreloadProps: ({ params }) => ({
     queries: {
-      order: { parameters: query0, variables: { id: params.id } },
+      data: { parameters: query0, variables: { id: params.id } },
     },
   }),
 };
@@ -93,22 +92,19 @@ const entrypoint: EntryPoint<Queries> = {
 export default entrypoint;
 ```
 
-You don't write this. You don't read this. It's generated from your `Queries` type + the page's directory location + the operation's `variables` declaration in the GraphQL.
+You don't write this. You don't read this. It's generated from your direct `query` export + the page's directory location + the operation's `variables` declaration in the GraphQL.
 
 ## Variable binding
 
 Codegen automatically maps URL params to query variables when their names match:
 
-| `Queries` declares | URL pattern | Variables passed |
+| Page query declares | URL pattern | Variables passed |
 |---|---|---|
 | `OrderDetailQuery($id: ID!)` | `/orders/[id]` | `{ id: params.id }` |
 | `ListQuery($limit: Int)` | `/items` | `{}` (no `limit` param) |
 | `SearchQuery($q: String!, $limit: Int)` | `/search/[q]` | `{ q: params.q }` (no `limit` param) |
 
-If your query needs a variable that isn't a URL param (e.g. a constant, or derived from search params), you can't get it through `getPreloadProps` automatically — the variable will be `undefined` at preload time. Either:
-
-1. **Use `usePreloadedQuery` with `useLazyLoadQuery` for that field** — load the page's preloaded queries first, then fire a follow-up.
-2. **Declare a sub-entrypoint** with its own `getPreloadProps`. (See "Sub-entrypoints" below.)
+If your query needs a variable that isn't a URL param (e.g. a constant, or derived from search params), it will be omitted at preload time. Use a route segment for durable URL state, or load/refetch that secondary data from inside the component.
 
 ## The fetch policy
 
@@ -130,6 +126,25 @@ Crucible persists Relay's `RecordSource` to `localStorage`, debounced ~500ms aft
 crucible.relay-cache.<schemaHash>
 ```
 
+Authenticated apps should scope that key by a stable user or session identifier:
+
+```ts
+// src/app/crucible.config.ts
+import type { CrucibleConfig } from "crucible";
+
+export const relayPersistence: CrucibleConfig["relayPersistence"] = {
+  scope: localStorage.getItem("currentUserId"),
+};
+```
+
+With `scope: "user_123"`, the key becomes `crucible.relay-cache.<schemaHash>.user_123`. Unscoped apps keep the original key. Local-first apps that persist domain data to SQLite should usually disable Relay RecordSource persistence entirely:
+
+```ts
+export const relayPersistence: CrucibleConfig["relayPersistence"] = {
+  persistStore: false,
+};
+```
+
 `schemaHash` is an FNV-1a hash of `schema.graphql` content, baked into the bundle at build time via `import.meta.env.CRUCIBLE_SCHEMA_HASH`. When the schema changes:
 
 1. The hash changes → the cache key changes.
@@ -140,75 +155,30 @@ This means **a schema change orphans stale records instead of risking a returnin
 
 You don't manage this manually. The plugin embeds the hash; the runtime reads it.
 
-## Sub-entrypoints
+## Parallel route data
 
-A `page.tsx` can declare independent loadable units that don't block the page itself:
+When a page has independent data-heavy regions, model them as parallel routes with `@slot/` directories instead of page-level entrypoints. Each matched slot route is its own page with its own `query`, chunk, loading/error boundaries, and URL matching.
 
-```tsx
-// src/app/dashboard/page.tsx
-import * as Crucible from "crucible";
-import { graphql, usePreloadedQuery } from "react-relay";
-import { Suspense } from "react";
-import type { dashboardQuery } from "./__generated__/dashboardQuery.graphql";
-
-export type Queries = { dashboard: dashboardQuery };
-
-// EntryPoints declares the sub-entrypoints by name. Each value is a
-// path to a sibling .tsx file that itself exports a default component
-// + a `Queries` type.
-export type EntryPoints = {
-  sidebar: typeof import("./_sidebar.tsx");
-  feed: typeof import("./_feed.tsx");
-};
-
-export default function Dashboard({
-  queries,
-  entryPoints,
-}: Crucible.PageProps<"/dashboard">) {
-  const data = usePreloadedQuery(
-    graphql`query dashboardQuery @preloadable { viewer { name } }`,
-    queries.dashboard,
-  );
-  return (
-    <div>
-      <h1>Hi, {data.viewer?.name}</h1>
-      <Suspense fallback={<aside>Loading sidebar…</aside>}>
-        <Crucible.EntryPointContainer entryPoint={entryPoints.sidebar} />
-      </Suspense>
-      <Suspense fallback={<section>Loading feed…</section>}>
-        <Crucible.EntryPointContainer entryPoint={entryPoints.feed} />
-      </Suspense>
-    </div>
-  );
-}
+```txt
+src/app/dashboard/
+├── layout.tsx          # receives { children, sidebar }
+├── page.tsx            # dashboard shell query
+└── @sidebar/
+    ├── default.tsx
+    └── page.tsx        # sidebar query
 ```
 
-```tsx
-// src/app/dashboard/_sidebar.tsx
-import { graphql, usePreloadedQuery } from "react-relay";
-import * as Crucible from "crucible";
-import type { sidebarQuery } from "./__generated__/sidebarQuery.graphql";
+That keeps the primitive count small: pages are entrypoints, and parallel routes are how multiple entrypoints render together.
 
-export type Queries = { sidebar: sidebarQuery };
+## Incremental delivery hitlist
 
-export default function Sidebar({ queries }: Crucible.SubProps<Queries>) {
-  const data = usePreloadedQuery(
-    graphql`query sidebarQuery @preloadable { viewer { teams { name } } }`,
-    queries.sidebar,
-  );
-  return <ul>{data.viewer?.teams.map((t) => <li key={t.name}>{t.name}</li>)}</ul>;
-}
-```
+Crucible's route API is intentionally aligned with Relay rather than inventing a separate data abstraction. The next Relay-native split points to investigate are:
 
-Behavior:
-- All three queries (`dashboard`, `sidebar`, `feed`) fire **in parallel** when the route resolves.
-- The `dashboard` query is required to render the page shell.
-- Sub-entrypoints suspend independently inside their `<Suspense>` boundary — slow sidebar doesn't block fast feed.
-- Sub-entrypoint code chunks split too: each `_sidebar.tsx` becomes its own bundle chunk.
+- `@defer` for non-critical fragments that should reveal after the route shell.
+- `@stream` for long lists that should render initial items before the full connection is available.
+- Multipart/incremental response handling in the local GraphQL Worker path, so local GraphQL does not become a special-case dead end.
 
-This is useful when:
-- A page has multiple data-heavy regions (sidebar, feed, ticker) that should appear independently.
-- You want code-splitting at the sub-page level — sidebar code only loads when the dashboard is visited.
+Remote GraphQL should be proven first, then local GraphQL can match the same observable contract.
 
 ## Prefetch on hover/focus
 
@@ -304,7 +274,7 @@ The legacy positional form `createEnvironment(platform?)` is still supported —
 
 **Don't fire `loadQuery` from inside `useMemo` or render.** `loadQuery` is intentionally side-effectful — it mutates the Relay store. Calling it during render means a discarded render under concurrent scheduling leaks the query ref. Call it in event handlers (which Crucible does for navigation), in `useState` initializers, or in `useEffect`.
 
-**Don't call `useLazyLoadQuery` for the page's primary data.** It works, but it forces a serial waterfall (chunk → render → query) instead of the parallel preload Crucible enables. Use the `Queries` type + `usePreloadedQuery` for primary data.
+**Don't call `useLazyLoadQuery` for the page's primary data.** It works, but it forces a serial waterfall (chunk → render → query) instead of the parallel preload Crucible enables. Use `export const query = graphql\`... @preloadable ...\`` + `usePreloadedQuery` for primary data.
 
 **Don't write to `localStorage` under the `crucible.relay-cache.*` prefix.** The runtime owns it.
 
@@ -337,21 +307,17 @@ src/app/items/[id]/page.tsx      ← detail query, /items/123
 
 Click a list item → `<Link to="/items/123">` warms detail on hover → click navigates → detail renders from warm cache.
 
-### Tabs that share a parent query
+### Tabs and shared shells
 
-```tsx
-// src/app/orders/[id]/layout.tsx
-export type Queries = { order: orderShellQuery };
-// renders the order's shared header, then {children}
-```
+Route pages own preloaded queries today. Layouts provide shared UI and boundaries; child tab pages export their own `query` and can read shared Relay fragments from records that are already in the store.
 
 ```tsx
 // src/app/orders/[id]/page.tsx (or .../activity/page.tsx etc.)
-export type Queries = { details: orderDetailsQuery };
+export const query = graphql`query orderDetailsQuery($id: ID!) @preloadable { ... }`;
 // renders the active tab's content
 ```
 
-Both queries fire when the route resolves. Tabs that share a parent layout can read fragments off the parent's query via Relay fragments.
+For multiple independent regions, use parallel routes (`@slot/`) so each region remains a real page entrypoint with its own query and boundary.
 
 ### Optimistic UI
 

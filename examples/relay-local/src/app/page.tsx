@@ -1,5 +1,4 @@
 import { useEffect, useState, type FormEvent } from "react";
-import * as Crucible from "crucible";
 import { graphql, useMutation, usePreloadedQuery } from "react-relay";
 import type { page_CreateTodoMutation } from "./__generated__/page_CreateTodoMutation.graphql.ts";
 import type { page_ToggleTodoMutation } from "./__generated__/page_ToggleTodoMutation.graphql.ts";
@@ -21,7 +20,9 @@ const formatBytes = (value: number | null): string => {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 };
 
-const todosQuery = graphql`
+export const metadata = { title: "Relay Local" };
+
+export const query = graphql`
   query page_TodosQuery @preloadable {
     todos(first: 50) {
       edges {
@@ -61,13 +62,8 @@ const toggleTodoMutation = graphql`
   }
 `;
 
-export const Route = Crucible.Route("/", {
-  query: {} as page_TodosQuery,
-  title: "Relay Local",
-});
-
-export default Route.page(({ data }) => {
-  const result = usePreloadedQuery<page_TodosQuery>(todosQuery, data);
+export default function Page({ data }: { data: import("react-relay").PreloadedQuery<page_TodosQuery> }) {
+  const result = usePreloadedQuery<page_TodosQuery>(query, data);
   const [todos, setTodos] = useState(() =>
     result.todos.edges
       .map((edge) => edge.node)
@@ -336,4 +332,4 @@ export default Route.page(({ data }) => {
       </section>
     </main>
   );
-});
+}

@@ -10,7 +10,6 @@ flowchart LR
   parse --> emit[emit.ts<br/>generate]
   emit --> entrypoints[".crucible/entrypoints/*.ts"]
   emit --> routes[".crucible/routes.ts"]
-  emit --> registry[".crucible/registry.d.ts"]
   emit --> main[".crucible/main.tsx"]
   src --> indexhtml[index-html.ts<br/>render splash + nonce]
   indexhtml --> html[".crucible/index.html"]
@@ -58,10 +57,9 @@ Output: a flat array of `DiscoveredRoute`. Each carries:
 
 For each discovered page, opens the file with the TypeScript compiler API and extracts:
 
-- The `Queries` type alias declaration. From `export type Queries = { home: HomeQuery }`, parse out the field names + the artifact type each refers to + the artifact's path on disk.
-- The `EntryPoints` type alias (if present). From `export type EntryPoints = { sidebar: typeof import("./_sidebar.tsx") }`, parse the field names + module paths.
+- The direct `query` export, when present. From `export const query = graphql\`query PageQuery @preloadable { ... }\``, parse the operation name and artifact path.
 - The `searchParams` export (if present). Note: only its presence is detected here; the schema runs at runtime.
-- For each query, the `variables` declaration in its GraphQL operation, parsed from the source file's `graphql\`...\`` template literals.
+- The `variables` declaration in the GraphQL operation, parsed from the source file's `graphql\`...\`` template literals.
 
 Output: a `ParsedPage` per page. The next phase combines `DiscoveredRoute + ParsedPage` to emit code.
 
@@ -71,15 +69,15 @@ Three artifacts per scan:
 
 ### `.crucible/entrypoints/<id>.ts`
 
-One per route. Imports the page's GraphQL artifact files, declares the `Queries` shape, builds an `EntryPoint` object that maps URL params to query variables. Looks like:
+One per route. Imports the page's GraphQL artifact files, declares the generated query shape, builds an `EntryPoint` object that maps URL params to query variables. Looks like:
 
 ```ts
 import { JSResource, type EntryPoint } from "react-crucible/runtime/entrypoint.ts";
-import query0 from "../../src/app/orders/[id]/__generated__/OrderDetailQuery.graphql.ts";
+import query0 from "../../src/app/orders/[id]/__generated__/OrderDetailQuery$parameters.ts";
 import type { OrderDetailQuery } from "../../src/app/orders/[id]/__generated__/OrderDetailQuery.graphql.ts";
 
 type Queries = {
-  order: { parameters: typeof query0; variables: OrderDetailQuery["variables"] };
+  data: { parameters: typeof query0; variables: OrderDetailQuery["variables"] };
 };
 
 const entrypoint: EntryPoint<Queries> = {
@@ -88,7 +86,7 @@ const entrypoint: EntryPoint<Queries> = {
   ),
   getPreloadProps: ({ params }) => ({
     queries: {
-      order: { parameters: query0, variables: { id: params.id } },
+      data: { parameters: query0, variables: { id: params.id } },
     },
   }),
 };
@@ -97,8 +95,6 @@ export default entrypoint;
 ```
 
 Variables binding: when the page's URL has a `[name]` segment AND the query declares a `$name` variable, codegen wires them together. Mismatched names go unbound.
-
-Sub-entrypoints (declared via `EntryPoints` type) are emitted as separate files in the same directory, recursively.
 
 ### `.crucible/routes.ts`
 
@@ -130,12 +126,6 @@ export const routes: ReadonlyArray<RouteRecord> = [
 ```
 
 Layouts are wrapped in `JSResource` (lazy — split into the page's chunk). Loading/error/not-found components are imported eagerly because their boundary fallbacks must render synchronously when their boundary fires.
-
-### `.crucible/registry.d.ts`
-
-A `declare module "crucible" { interface RouteRegistry { … } }` augmentation. Maps each URL literal to its `params`, `queries`, and (optionally) `searchParams` shapes. This is what makes `Crucible.PageProps<"/orders/[id]">` infer to `{ params: { id: string }; queries: { order: PreloadedQuery<OrderDetailQuery>; }; … }`.
-
-The user authors `Crucible.PageProps<"/orders/[id]">` by URL literal; codegen ensures the type system knows the shape. New page → new registry entry; deleted page → registry entry removed; renamed param → updated.
 
 ## Phase 4: main.tsx (`emit.ts`)
 
@@ -195,7 +185,6 @@ apps/<your-app>/.crucible/
 │   └── …
 ├── index.html                     ← splash + CSP + boot
 ├── main.tsx                       ← createRoot + AppShell + App
-├── registry.d.ts                  ← typed RouteRegistry augmentation
 └── routes.ts                      ← RouteRecord[] for the runtime
 ```
 
@@ -216,6 +205,6 @@ Generated entrypoints will then `import { JSResource } from "crucible/runtime/en
 
 - **Symlinks confuse the scanner.** It walks via `readdirSync` + `statSync`. Symlinked directories under `src/app/` aren't followed.
 - **`.ts` and `.tsx` only.** No CommonJS, no `.mjs`, no `.jsx`.
-- **The TS AST parse is best-effort.** It looks for the literal patterns `export type Queries = {...}` and `export type EntryPoints = {...}`. Computed types or type aliases that re-export from another file aren't followed.
+- **The TS AST parse is best-effort.** It looks for direct top-level exports such as `export const query = graphql\`...\`` and `export const searchParams = ...`. Computed indirection isn't followed.
 - **Codegen is synchronous and single-threaded.** A 10,000-route app will take noticeable time. Crucible's app is in the dozens; this hasn't been a constraint.
 - **No incremental codegen.** Every run scans everything. The work is small enough that it doesn't matter; if it ever does, this is where you'd add a cache.

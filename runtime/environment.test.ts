@@ -55,6 +55,22 @@ describe("makePersister", () => {
     persister.dispose();
   });
 
+  test("scope appends a user/session segment to the storage key", async () => {
+    const source = new RecordSource({ "client:root": { __id: "client:root" } });
+    const persister = makePersister(source, "user/123");
+
+    persister.schedule();
+    await new Promise((r) => setTimeout(r, 600));
+
+    const writes = Array.from({ length: localStorage.length }, (_, i) =>
+      localStorage.key(i),
+    ).filter((k): k is string => !!k && k.startsWith(STORAGE_PREFIX));
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.endsWith(".user%2F123")).toBe(true);
+
+    persister.dispose();
+  });
+
   test("dispose() before debounce fires cancels the pending write", async () => {
     const source = new RecordSource();
     const persister = makePersister(source);

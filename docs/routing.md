@@ -74,35 +74,35 @@ import * as Crucible from "crucible";
 import { graphql, usePreloadedQuery } from "react-relay";
 import type { ordersQuery } from "./__generated__/ordersQuery.graphql";
 
-export type Queries = { orders: ordersQuery };
+export const query = graphql`
+  query ordersQuery($id: ID!) @preloadable {
+    order(id: $id) { id, status }
+  }
+`;
 
 export const metadata: Crucible.Metadata = { title: "Orders" };
 
 export default function OrdersPage({
-  queries,
+  data,
   params,
   search,
-}: Crucible.PageProps<"/orders/[id]">) {
-  const data = usePreloadedQuery(
-    graphql`
-      query ordersQuery($id: ID!) @preloadable {
-        order(id: $id) { id, status }
-      }
-    `,
-    queries.orders,
-  );
-  return <p>{data.order?.status}</p>;
+}: {
+  data: import("react-relay").PreloadedQuery<ordersQuery>;
+  params: { id: string };
+  search: URLSearchParams;
+}) {
+  const result = usePreloadedQuery(query, data);
+  return <p>{result.order?.status}</p>;
 }
 ```
 
 Required exports:
-- `export default function ...` — the React component. Receives `Crucible.PageProps<"/path">`.
-- `export type Queries` — the page's preloadable query map. Codegen wires this to the entrypoint.
+- `export default function ...` — the React component. Receives `{ data, params, search }`.
 
 Optional exports:
+- `query` — a single Relay `graphql` operation with `@preloadable`. Codegen preloads it in parallel with the page chunk.
 - `metadata: Crucible.Metadata` — merged into `<DocumentHead>`. See [metadata.md](./metadata.md).
-- `searchParams` — Standard Schema validator. When present, `props.search` is typed as the validator's output instead of `URLSearchParams`.
-- `EntryPoints` (type) — declares sub-entrypoints. See [data-loading.md](./data-loading.md).
+- `searchParams` — Standard Schema validator. When present, `search` is the validator's output instead of `URLSearchParams`.
 
 ### Layouts
 
@@ -291,10 +291,10 @@ Common usage: a different layout for marketing pages vs. the authenticated app.
 
 ## Type-safe URL params
 
-`Crucible.PageProps<"/orders/[id]">` reads from a global `RouteRegistry` interface that codegen populates with every page's URL literal. So:
+Filesystem params are passed to the page as `params`:
 
 ```tsx
-function OrdersPage({ params }: Crucible.PageProps<"/orders/[id]">) {
+function OrdersPage({ params }: { params: { id: string } }) {
   // params is typed as { id: string }
   return null;
 }
@@ -316,7 +316,7 @@ export const searchParams = z.object({
 
 export default function ListPage({
   search,
-}: Crucible.PageProps<"/items">) {
+}: { search: { q?: string; limit: number } }) {
   // search is typed as { q?: string; limit: number }
   return <p>limit={search.limit}</p>;
 }

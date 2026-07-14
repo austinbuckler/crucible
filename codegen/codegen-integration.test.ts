@@ -25,10 +25,8 @@ describe("runCodegen — full pipeline", () => {
   test("emits routes manifest + entrypoint for a single page", () => {
     const root = makeApp({
       "src/app/page.tsx": `
-        import * as Crucible from "crucible";
         import { graphql } from "react-relay";
-        const _q = graphql\`query page_HomeQuery @preloadable { __typename }\`;
-        export const Route = Crucible.Route("/", {});
+        export const query = graphql\`query page_HomeQuery @preloadable { __typename }\`;
         export default function Page() { return null }
       `,
       // relay-compiler artifact stub so the entrypoint import resolves
@@ -63,14 +61,12 @@ describe("runCodegen — full pipeline", () => {
   test("emits param mapping for dynamic routes when names match", () => {
     const root = makeApp({
       "src/app/clients/[id]/page.tsx": `
-        import * as Crucible from "crucible";
         import { graphql } from "react-relay";
-        import type { ClientQuery } from "./__generated__/ClientQuery.graphql";
-        export const Route = Crucible.Route("/clients/[id]", {});
+        export const query = graphql\`
+          query ClientQuery($id: ID!) @preloadable { client(id: $id) { id } }
+        \`;
         export default function Page() {
-          return usePreloadedQuery(graphql\`
-            query ClientQuery($id: ID!) @preloadable { client(id: $id) { id } }
-          \`, queries.client)
+          return null;
         }
       `,
       "src/app/clients/[id]/__generated__/ClientQuery.graphql.ts":
@@ -93,11 +89,8 @@ describe("runCodegen — full pipeline", () => {
   test("emits _preload destructure when no variables consume params", () => {
     const root = makeApp({
       "src/app/page.tsx": `
-        import * as Crucible from "crucible";
         import { graphql } from "react-relay";
-        import type { page_HomeQuery } from "./__generated__/page_HomeQuery.graphql";
-        const _q = graphql\`query page_HomeQuery @preloadable { __typename }\`;
-        export const Route = Crucible.Route("/", {});
+        export const query = graphql\`query page_HomeQuery @preloadable { __typename }\`;
         export default function Page() { return null }
       `,
       "src/app/__generated__/page_HomeQuery.graphql.ts":
@@ -149,17 +142,13 @@ describe("runCodegen — full pipeline", () => {
     rmSync(root, { recursive: true });
   });
 
-  test("emits sub-entrypoint module + wires parent's Entrypoint field", () => {
+  test("rejects page-level entryPoints; use parallel route slots instead", () => {
     const root = makeApp({
       "src/app/dashboard/page.tsx": `
-        import * as Crucible from "crucible";
         import { graphql } from "react-relay";
         import Sidebar from "./sidebar";
-        import type { dashboard_PageQuery } from "./__generated__/dashboard_PageQuery.graphql";
-        const _q = graphql\`query dashboard_PageQuery @preloadable { __typename }\`;
-        export const Route = Crucible.Route("/dashboard", {
-          Entrypoint: { Sidebar },
-        });
+        export const query = graphql\`query dashboard_PageQuery @preloadable { __typename }\`;
+        export const entryPoints = { Sidebar };
         export default function Page() { return null }
       `,
       "src/app/dashboard/__generated__/dashboard_PageQuery.graphql.ts":
@@ -174,34 +163,7 @@ describe("runCodegen — full pipeline", () => {
         "const node: any = {}; export default node; export type dashboard_StatsQuery = { variables: {}; response: {} };",
     });
 
-    runCodegen({ appRoot: root });
-
-    const parentEntryFile = join(
-      root,
-      ".crucible",
-      "entrypoints",
-      "dashboard.ts",
-    );
-    const subEntryFile = join(
-      root,
-      ".crucible",
-      "entrypoints",
-      "dashboard.Sidebar.ts",
-    );
-
-    expect(existsSync(parentEntryFile)).toBe(true);
-    expect(existsSync(subEntryFile)).toBe(true);
-
-    const parent = readFileSync(parentEntryFile, "utf8");
-    expect(parent).toContain('import __ep_Sidebar from "./dashboard.Sidebar.ts"');
-    expect(parent).toMatch(/entryPoints:\s*\{\s*Sidebar:\s*__ep_Sidebar/);
-
-    const sub = readFileSync(subEntryFile, "utf8");
-    // Sub-entrypoint uses SubEntryPoint type (not EntryPoint) and SubModule
-    // shape (no params/search).
-    expect(sub).toContain("SubEntryPoint<Queries>");
-    expect(sub).toContain("dashboard_StatsQuery");
-    expect(sub).not.toContain("search:");
+    expect(() => runCodegen({ appRoot: root })).toThrow(/parallel route slots/);
 
     rmSync(root, { recursive: true });
   });
@@ -273,7 +235,7 @@ describe("runCodegen — full pipeline", () => {
       "if (__cruxLocalGraphQL) await prepareLocalGraphQL(__cruxLocalGraphQL);",
     );
     expect(main).toContain(
-      "Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: __cruxLocalGraphQL ? false : true })",
+      "Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: (__cruxLocalGraphQL ? false : true), storeScope: undefined })",
     );
     expect(main).not.toContain("__cruxNetwork");
     rmSync(root, { recursive: true });
@@ -303,7 +265,46 @@ describe("runCodegen — full pipeline", () => {
       "const __cruxSubscribe = __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : __cruxNetwork?.subscribe;",
     );
     expect(main).toContain(
-      "const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: __cruxLocalGraphQL ? false : true });",
+      "const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: (__cruxLocalGraphQL ? false : true), storeScope: undefined });",
+    );
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx emission threads relayPersistence into createEnvironment", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const relayPersistence: CrucibleConfig["relayPersistence"] = { scope: "user-1" };
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { relayPersistence as __cruxRelayPersistence } from "../src/app/crucible.config.ts"',
+    );
+    expect(main).toContain(
+      "Crucible.createEnvironment({ persistStore: __cruxRelayPersistence?.persistStore, storeScope: __cruxRelayPersistence?.scope })",
+    );
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx emission threads network and relayPersistence together", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const network: CrucibleConfig["network"] = { fetch: globalThis.fetch };
+        export const relayPersistence: CrucibleConfig["relayPersistence"] = { scope: "user-1" };
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { network as __cruxNetwork, relayPersistence as __cruxRelayPersistence } from "../src/app/crucible.config.ts"',
+    );
+    expect(main).toContain(
+      "Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe, persistStore: __cruxRelayPersistence?.persistStore, storeScope: __cruxRelayPersistence?.scope })",
     );
     rmSync(root, { recursive: true });
   });

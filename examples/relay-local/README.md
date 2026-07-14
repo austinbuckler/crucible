@@ -34,6 +34,8 @@ export const localGraphQL = {
 
 Relay never knows about SQLite or sync. It sends a normal GraphQL POST, and Crucible routes that POST to the local worker because `localGraphQL` is exported.
 
+This example proves the browser-side data path. It intentionally does not include a production sync server; see [`docs/local-first-sync.md`](../../docs/local-first-sync.md) for the recommended server contract, outbox shape, and Drizzle-style pseudo-code.
+
 The page includes mutations so you can prove data is durable:
 
 - Add a todo or toggle an existing todo.

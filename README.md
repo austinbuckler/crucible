@@ -26,7 +26,7 @@ If you've used Next.js's `app/` directory, the conventions will be familiar. If 
 
 ## Inspirations
 
-- **[Pastoria](http://pastoria.org)** — the route entrypoint + preloaded queries pattern Crucible uses for data loading is a faithful adaptation. The `Queries` type, `getPreloadProps`, and the parallel chunk-and-data preload all come from there.
+- **[Pastoria](http://pastoria.org)** — the route entrypoint + preloaded queries pattern Crucible uses for data loading is a faithful adaptation. Crucible keeps the parallel chunk-and-data preload, but page authors use a direct `query` export.
 - **Next.js (App Router)** — file-system routing, layouts, parallel slots, intercept routes, default fallbacks, the `metadata` export shape, and the title-template API are all conscious adoptions. Crucible aims to be "the same conventions, smaller scope, all client-side."
 - **React Router** — `<Link>` ergonomics, `useNavigate`, scroll-restoration semantics borrow heavily.
 
@@ -86,16 +86,13 @@ import * as Crucible from "crucible";
 import { graphql, usePreloadedQuery } from "react-relay";
 import type { page_HomeQuery } from "./__generated__/page_HomeQuery.graphql";
 
-export type Queries = { home: page_HomeQuery };
+export const query = graphql`query page_HomeQuery @preloadable { viewer { email } }`;
 
 export const metadata: Crucible.Metadata = { title: "Home" };
 
-export default function Home({ queries }: Crucible.PageProps<"/">) {
-  const data = usePreloadedQuery(
-    graphql`query page_HomeQuery @preloadable { viewer { email } }`,
-    queries.home,
-  );
-  return <p>Hi, {data.viewer?.email ?? "stranger"}.</p>;
+export default function Home({ data }: { data: import("react-relay").PreloadedQuery<page_HomeQuery> }) {
+  const result = usePreloadedQuery(query, data);
+  return <p>Hi, {result.viewer?.email ?? "stranger"}.</p>;
 }
 ```
 
@@ -120,7 +117,7 @@ Every file under `src/app/` becomes part of the route tree by convention:
 | `loading.tsx` | Suspense fallback for this frame. |
 | `error.tsx` | Error boundary fallback for this frame. |
 | `not-found.tsx` | NotFound boundary fallback for this frame. |
-| `[id]/` | Dynamic param. Available as `params.id` on `PageProps`. |
+| `[id]/` | Dynamic param. Available as `params.id` on the page props. |
 | `[...slug]/` | Catch-all. `params.slug = "a/b/c"`. |
 | `(group)/` | Organizational, not part of the URL. |
 | `@dialog/` | Parallel slot — passed to the parent layout as a `dialog` prop. (`@<name>/` works for any name; the directory name becomes the prop name.) |
@@ -130,11 +127,13 @@ See [`docs/routing.md`](./docs/routing.md) for depth.
 
 ### Data loading
 
-Each `page.tsx` exports a `Queries` type. Crucible's codegen emits an entrypoint that pre-loads those queries in parallel with the page's chunk, so the page doesn't suspend on data after the route splits. Your component reads via `usePreloadedQuery`. Sub-entrypoints (declared via the page's `EntryPoints` type) load alongside.
+Each `page.tsx` can export `query = graphql\`... @preloadable ...\``. Crucible's codegen emits a route entrypoint that pre-loads that query in parallel with the page's chunk, so the page doesn't suspend on data after the route splits. Use parallel routes (`@slot/`) when independent UI regions need their own route/data loading.
 
 `store-and-network` is the default fetch policy: cached records render instantly while a refresh fetches in the background. Schema changes (detected via a build-time hash of `schema.graphql`) invalidate the localStorage cache so stale records can't crash a returning user.
 
 See [`docs/data-loading.md`](./docs/data-loading.md).
+
+For local-first apps, Crucible can route Relay through an opt-in local GraphQL executor backed by browser SQLite/OPFS. The server sync contract stays app-owned; see [`docs/local-first-sync.md`](./docs/local-first-sync.md) for the recommended outbox/change-feed shape.
 
 ### Metadata
 

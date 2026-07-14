@@ -35,8 +35,13 @@ const GRAPHQL_ENDPOINT = `${API_BASE_URL}/api/graphql`;
 // the env var isn't defined (e.g. running tests outside Vite).
 const SCHEMA_HASH = import.meta.env.CRUCIBLE_SCHEMA_HASH ?? "noschema";
 const STORAGE_PREFIX = "crucible.relay-cache.";
-const STORAGE_KEY = `${STORAGE_PREFIX}${SCHEMA_HASH}`;
+const SCHEMA_STORAGE_KEY = `${STORAGE_PREFIX}${SCHEMA_HASH}`;
 const PERSIST_DEBOUNCE_MS = 500;
+
+function storageKeyForScope(scope?: string | null): string {
+  if (!scope) return SCHEMA_STORAGE_KEY;
+  return `${SCHEMA_STORAGE_KEY}.${encodeURIComponent(scope)}`;
+}
 
 // Sweep any cache keys belonging to a prior schema. Runs once at module
 // load — no per-request cost. Idempotent because we only remove keys with
@@ -48,7 +53,9 @@ function sweepStaleCacheKeys(): void {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (!k) continue;
-      if (k.startsWith(STORAGE_PREFIX) && k !== STORAGE_KEY) stale.push(k);
+      const isCurrentSchema =
+        k === SCHEMA_STORAGE_KEY || k.startsWith(`${SCHEMA_STORAGE_KEY}.`);
+      if (k.startsWith(STORAGE_PREFIX) && !isCurrentSchema) stale.push(k);
     }
     for (const k of stale) localStorage.removeItem(k);
   } catch {
@@ -57,10 +64,10 @@ function sweepStaleCacheKeys(): void {
 }
 sweepStaleCacheKeys();
 
-function hydrateRecordSource(): RecordSource {
+function hydrateRecordSource(storageKey: string): RecordSource {
   if (typeof localStorage === "undefined") return new RecordSource();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (!raw) return new RecordSource();
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return new RecordSource();
@@ -76,7 +83,11 @@ type Persister = {
 };
 
 // Exported for unit tests; not part of the package's public API.
-export function makePersister(source: RecordSource): Persister {
+export function makePersister(
+  source: RecordSource,
+  scope?: string | null,
+): Persister {
+  const storageKey = storageKeyForScope(scope);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
   return {
@@ -87,10 +98,10 @@ export function makePersister(source: RecordSource): Persister {
         if (disposed) return;
         if (typeof localStorage === "undefined") return;
         try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(source.toJSON()));
+          localStorage.setItem(storageKey, JSON.stringify(source.toJSON()));
         } catch {
           try {
-            localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(storageKey);
           } catch {
             // private mode / quota issues — give up
           }
@@ -252,11 +263,13 @@ function createRelayEnvironment(
   userFetch: FetchLike | undefined,
   userSubscribe: SubscribeLike | undefined,
   persistStore = true,
+  storeScope?: string | null,
 ): { relay: RelayEnvironment; dispose: () => void } {
-  const source = persistStore ? hydrateRecordSource() : new RecordSource();
+  const storageKey = storageKeyForScope(storeScope);
+  const source = persistStore ? hydrateRecordSource(storageKey) : new RecordSource();
   const store = new Store(source);
   const persister = persistStore
-    ? makePersister(source)
+    ? makePersister(source, storeScope)
     : { schedule: () => {}, dispose: () => {} } satisfies Persister;
 
   const buildGraphQLBody = (
@@ -447,6 +460,12 @@ export type CreateEnvironmentOptions = {
    * should set this to false so SQLite is the only persistent cache.
    */
   persistStore?: boolean;
+  /**
+   * Optional cache scope appended to the Relay RecordSource localStorage key.
+   * Use a stable user/session identifier so one user's normalized records are
+   * never hydrated into another user's environment on shared devices.
+   */
+  storeScope?: string | null;
 };
 
 // Two call shapes:
@@ -481,6 +500,7 @@ export function createEnvironment(
     options.fetch,
     options.subscribe,
     options.persistStore ?? true,
+    options.storeScope,
   );
   return { relay, platform: resolved, dispose };
 }

@@ -66,6 +66,9 @@ export function emitAll(
 //   - `swUpdate` (#53) — threaded into `<AppShell>` so consumers can
 //     tune the SW update lifecycle (idle threshold, observability
 //     callbacks) per the `SwUpdateBehavior` shape from #29.
+//   - `relayPersistence` — threaded into `createEnvironment` so apps can
+//     scope or disable Relay RecordSource localStorage persistence without
+//     hand-editing the generated bootstrap.
 //
 // Imports + props are conditional on which fields the user exports —
 // apps that don't ship a config file get the original zero-config
@@ -123,6 +126,7 @@ export function emitMainEntry(ctx: EmitContext): void {
     const hasNetwork = exports.has("network");
     const hasLocalGraphQL = exports.has("localGraphQL");
     const hasSwUpdate = exports.has("swUpdate");
+    const hasRelayPersistence = exports.has("relayPersistence");
 
     // Build the import line incrementally so we only name what the user
     // actually exports. This prevents a "no exported member" type error
@@ -131,6 +135,7 @@ export function emitMainEntry(ctx: EmitContext): void {
     if (hasNetwork) importNames.push("network as __cruxNetwork");
     if (hasLocalGraphQL) importNames.push("localGraphQL as __cruxLocalGraphQL");
     if (hasSwUpdate) importNames.push("swUpdate as __cruxSwUpdate");
+    if (hasRelayPersistence) importNames.push("relayPersistence as __cruxRelayPersistence");
     const configImport =
         importNames.length > 0
             ? `import { ${importNames.join(", ")} } from "../src/app/crucible.config.ts";\n`
@@ -147,10 +152,12 @@ export function emitMainEntry(ctx: EmitContext): void {
         ? hasNetwork
             ? `const __cruxFetch = __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : __cruxNetwork?.fetch;
 const __cruxSubscribe = __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : __cruxNetwork?.subscribe;
-const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: __cruxLocalGraphQL ? false : true });`
-            : `const environment = Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: __cruxLocalGraphQL ? false : true });`
+const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: ${hasRelayPersistence ? "__cruxRelayPersistence?.persistStore ?? " : ""}(__cruxLocalGraphQL ? false : true), storeScope: ${hasRelayPersistence ? "__cruxRelayPersistence?.scope" : "undefined"} });`
+            : `const environment = Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: ${hasRelayPersistence ? "__cruxRelayPersistence?.persistStore ?? " : ""}(__cruxLocalGraphQL ? false : true), storeScope: ${hasRelayPersistence ? "__cruxRelayPersistence?.scope" : "undefined"} });`
         : hasNetwork
-          ? `const environment = Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe });`
+          ? `const environment = Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe${hasRelayPersistence ? ", persistStore: __cruxRelayPersistence?.persistStore, storeScope: __cruxRelayPersistence?.scope" : ""} });`
+          : hasRelayPersistence
+            ? `const environment = Crucible.createEnvironment({ persistStore: __cruxRelayPersistence?.persistStore, storeScope: __cruxRelayPersistence?.scope });`
           : `const environment = Crucible.createEnvironment();`;
     const appShellOpen = hasSwUpdate
         ? `<Crucible.AppShell swUpdate={__cruxSwUpdate}>`
@@ -180,8 +187,8 @@ createRoot(document.getElementById("root")!).render(
 // top-level export names we recognize. We do a syntactic scan rather
 // than a full TypeScript compile here for two reasons: (a) codegen
 // runs every dev-server boot and on every file save, so it must be
-// cheap; (b) we only care about three or four specific names —
-// detecting them via regex is reliable for the patterns this file is
+// cheap; (b) we only care about a few specific names — detecting them
+// via regex is reliable for the patterns this file is
 // expected to hold (`export const network = …`, `export const
 // localGraphQL = …`, `export const swUpdate = …`, occasionally re-exports). If a user resorts to
 // dynamic exports the codegen will simply not detect them and the
@@ -203,7 +210,7 @@ function readConfigExports(configPath: string): Set<string> {
     //   export { X }              ← bare re-export of a local binding
     //   export { foo as X }       ← aliased re-export
     // Only the known config-shape names are checked.
-    const known = ["network", "localGraphQL", "swUpdate"] as const;
+    const known = ["network", "localGraphQL", "swUpdate", "relayPersistence"] as const;
     for (const name of known) {
         if (hasDirectExportDeclaration(source, name) || hasNamedExport(source, name)) {
             found.add(name);
@@ -376,21 +383,8 @@ function emitEntrypoint(ctx: EmitContext, rwp: RouteWithPage): void {
         parsed: rwp.parsed,
         segments,
         id: rwp.route.id,
-        kind: "page",
         crucibleSpecifier: ctx.crucibleSpecifier,
     });
-    // Sub-entrypoints declared via the page's `EntryPoints` type. Each becomes
-    // its own emitted module. Recursion happens here too — a sub can declare
-    // its own `EntryPoints` and we walk it.
-    for (const ep of rwp.parsed.entryPoints) {
-        emitSubEntrypointModule({
-            ctx,
-            parentRouteId: rwp.route.id,
-            entryName: ep.fieldName,
-            sourceFile: ep.modulePath + ".tsx",
-            segments,
-        });
-    }
 }
 
 type EmitModuleOpts = {
@@ -399,7 +393,6 @@ type EmitModuleOpts = {
     parsed: ParsedPage;
     segments: ReadonlyArray<RouteSegment>;
     id: string;
-    kind: "page" | "sub";
     crucibleSpecifier: string;
 };
 
@@ -471,59 +464,27 @@ ${opts.parsed.queries
         : "Record<string, never>";
 
     // Page modules receive the unwrapped `data` (the single @preloadable
-    // PreloadedQuery), `params`, `search`, and the resolved sub-entrypoints
-    // map. Sub-entrypoints get only `data` + nested `entryPoints`.
-    //
-    // The page's `Route` runtime export carries the title + search-spec
-    // config; PageRenderer reads it directly. We don't type `Route` on
-    // the module shape because emit can't easily round-trip the typed
-    // `RouteObject` generics — PageRenderer reads it via a structural
-    // cast at runtime.
-    const isPage = opts.kind === "page";
+    // PreloadedQuery), `params`, and validated `search`.
     const dataField = opts.parsed.queries.length
         ? `data: Queries["data"]["parameters"] extends infer P ? import("react-relay").PreloadedQuery<${
               opts.parsed.queries[0]!.artifactExport
           }> : never`
         : `data: undefined`;
-    const moduleType = isPage
-        ? `Promise<{
-        default: ComponentType<{ ${dataField}; params: any; search: any; entryPoints: Record<string, any> }>;
-      }>`
-        : `Promise<{
-        default: ComponentType<{ ${dataField}; entryPoints: Record<string, any> }>;
+    const moduleType = `Promise<{
+        default: ComponentType<{ ${dataField}; params: any; search: any }>;
       }>`;
 
     const standardSchemaImport = "";
 
-    // Sub-entrypoints declared by THIS module. Imports + entryPoints field on
-    // the emitted entrypoint object. Recursion: any sub-entrypoint can itself
-    // declare more sub-entrypoints.
-    const subEpImports: string[] = [];
-    const subEpFields: string[] = [];
-    for (const ep of opts.parsed.entryPoints) {
-        const subId = `${opts.id}.${ep.fieldName}`;
-        const subFile = `./${subId}.ts`;
-        const ident = `__ep_${ep.fieldName.replace(/[^a-zA-Z0-9]/g, "_")}`;
-        subEpImports.push(`import ${ident} from "${subFile}";`);
-        subEpFields.push(`    ${ep.fieldName}: ${ident},`);
-    }
-    const entryPointsField =
-        subEpFields.length > 0
-            ? `\n  entryPoints: {\n${subEpFields.join("\n")}\n  },`
-            : "";
-
-    const epType = isPage ? "EntryPoint" : "SubEntryPoint";
-
     const content = `${HEADER}
-import { JSResource, type ${epType} } from "${opts.crucibleSpecifier}/runtime/entrypoint.ts";
+import { JSResource, type EntryPoint } from "${opts.crucibleSpecifier}/runtime/entrypoint.ts";
 import type { ComponentType } from "react";
 import type { Metadata } from "${opts.crucibleSpecifier}/runtime/metadata.tsx";
 ${standardSchemaImport}${queryImports}
-${subEpImports.join("\n")}
 
 type Queries = ${queriesType};
 
-const entrypoint: ${epType}<Queries> = {
+const entrypoint: EntryPoint<Queries> = {
   root: JSResource(
     "${opts.id}",
     () =>
@@ -533,43 +494,12 @@ const entrypoint: ${epType}<Queries> = {
     queries: {
 ${queryEntries}
     } as Queries,
-  }),${entryPointsField}
+  }),
 };
 
 export default entrypoint;
 `;
     writeIfChanged(opts.outFile, content);
-}
-
-function emitSubEntrypointModule(opts: {
-    ctx: EmitContext;
-    parentRouteId: string;
-    entryName: string;
-    sourceFile: string;
-    segments: ReadonlyArray<RouteSegment>;
-}): void {
-    const subId = `${opts.parentRouteId}.${opts.entryName}`;
-    const outFile = join(opts.ctx.outDir, "entrypoints", `${subId}.ts`);
-    const subParsed = parsePage(opts.sourceFile);
-    emitEntrypointModule({
-        outFile,
-        sourceFile: opts.sourceFile,
-        parsed: subParsed,
-        segments: opts.segments,
-        id: subId,
-        kind: "sub",
-        crucibleSpecifier: opts.ctx.crucibleSpecifier,
-    });
-    // Recurse into nested entry points declared by this sub.
-    for (const nested of subParsed.entryPoints) {
-        emitSubEntrypointModule({
-            ctx: opts.ctx,
-            parentRouteId: subId,
-            entryName: nested.fieldName,
-            sourceFile: nested.modulePath + ".tsx",
-            segments: opts.segments,
-        });
-    }
 }
 
 type ResourceRegistry = {

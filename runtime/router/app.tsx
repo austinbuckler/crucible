@@ -164,6 +164,10 @@ export function App({
   // their in-flight fetches. Cleared in the post-commit effect once
   // its resolution lands as `state.resolution`.
   const pendingResolutionRef = useRef<Resolution | null>(null);
+  const committedResolutionRef = useRef<Resolution | null>(null);
+  const unmountDisposeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
 
   // Initial state: synchronously match + load for the URL we boot at.
   // The useState initializer runs once per mount (twice in StrictMode
@@ -206,12 +210,6 @@ export function App({
       state.resolution,
     );
     lastLocationRef.current = state.location;
-    // The pending resolution committed — clear the ref so the next
-    // nav doesn't accidentally dispose live PreloadedQuery refs that
-    // are now backing the rendered tree.
-    if (pendingResolutionRef.current === state.resolution) {
-      pendingResolutionRef.current = null;
-    }
     const resolvedAt = performance.now();
     onResolveRef.current?.({
       location: {
@@ -225,6 +223,42 @@ export function App({
       durationMs: resolvedAt - state.startedAt,
     });
   }, [state.resolution, state.location, state.startedAt, buckets.allSlots]);
+
+  // Release committed `loadQuery` retains when the rendered resolution is
+  // replaced. Do this in effect setup, not cleanup: React StrictMode replays
+  // effect cleanup/setup in dev, and cleanup-based disposal would release the
+  // still-rendered PreloadedQuery refs during that replay.
+  useEffect(() => {
+    if (unmountDisposeTimerRef.current) {
+      clearTimeout(unmountDisposeTimerRef.current);
+      unmountDisposeTimerRef.current = null;
+    }
+    const previous = committedResolutionRef.current;
+    if (previous && previous !== state.resolution) {
+      disposeResolution(previous);
+    }
+    committedResolutionRef.current = state.resolution;
+    if (pendingResolutionRef.current === state.resolution) {
+      pendingResolutionRef.current = null;
+    }
+  }, [state.resolution]);
+
+  useEffect(() => {
+    return () => {
+      // Delay actual unmount disposal by one task so StrictMode's dev-only
+      // cleanup/setup replay can cancel it in the setup above.
+      unmountDisposeTimerRef.current = setTimeout(() => {
+        const committed = committedResolutionRef.current;
+        if (committed) disposeResolution(committed);
+        if (pendingResolutionRef.current) {
+          disposeResolution(pendingResolutionRef.current);
+          pendingResolutionRef.current = null;
+        }
+        committedResolutionRef.current = null;
+        unmountDisposeTimerRef.current = null;
+      }, 0);
+    };
+  }, []);
 
   // ---- navigate / popstate / prefetch -----------------------------------
 
@@ -252,8 +286,8 @@ export function App({
         startedAt,
       });
       // Cancel any in-flight nav whose resolution hasn't committed.
-      // `disposeResolution` walks every PreloadedQuery handle (page +
-      // sub-entrypoints, main + slots) and calls `.dispose()`. The
+      // `disposeResolution` walks every PreloadedQuery handle (main + slots)
+      // and calls `.dispose()`. The
       // network handler bridges Relay's unsubscribe into an
       // `AbortController.abort()`, so the underlying fetch (and any
       // pending transient-retry sleep) is cancelled too.
@@ -417,4 +451,3 @@ export function pickFromLocation(
   if (source === "pop" && lastLocation) return lastLocation;
   return readWindow();
 }
-

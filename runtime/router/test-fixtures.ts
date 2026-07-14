@@ -8,8 +8,6 @@ import {
   type EntryPoint,
   type PageModule,
   type QueryParameter,
-  type SubModule,
-  type SubEntryPoint,
 } from "../entrypoint.ts";
 import type { LayoutModule, RouteRecord, RouteSegment } from "./types.ts";
 
@@ -21,10 +19,6 @@ function emptyPageModule(): PageModule<AnyQueries> {
 }
 
 function emptyLayoutModule(): LayoutModule {
-  return { default: () => null };
-}
-
-function emptySubModule(): SubModule<AnyQueries> {
   return { default: () => null };
 }
 
@@ -51,16 +45,7 @@ export function fakeLayoutResource(moduleId = "layout-mod") {
   return Object.assign(r, { _loadCount: counter });
 }
 
-export function fakeSubResource(moduleId = "sub-mod") {
-  const counter = { value: 0 };
-  const r = JSResource(moduleId, () => {
-    counter.value++;
-    return Promise.resolve(emptySubModule());
-  });
-  return Object.assign(r, { _loadCount: counter });
-}
-
-/** Standard "no queries, no sub-entrypoints" entrypoint for routing tests. */
+/** Standard "no queries" entrypoint for routing tests. */
 export function fakeEntrypoint(moduleId = "page-mod"): EntryPoint<AnyQueries> {
   return {
     root: fakePageResource(moduleId),
@@ -89,15 +74,4 @@ function segmentToPath(s: RouteSegment): string {
   if (s.kind === "literal") return s.value;
   if (s.kind === "param") return `[${s.name}]`;
   return `[...${s.name}]`;
-}
-
-/** SubEntryPoint factory — declares the queries shape via getPreloadProps. */
-export function fakeSubEntrypoint(
-  queries: AnyQueries,
-  moduleId = "sub-mod",
-): SubEntryPoint<AnyQueries> {
-  return {
-    root: fakeSubResource(moduleId),
-    getPreloadProps: () => ({ queries }),
-  };
 }

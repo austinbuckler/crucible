@@ -1,20 +1,10 @@
-// Omakase page contract — `Crucible.Route(...)` returns a typed Route
-// object whose `.page(fn)` becomes the page's default export and whose
-// `.Entrypoint.<Name>` namespace exposes the file's sub-entrypoints.
-// `Crucible.Entrypoint(component)` marks a sibling file as an
-// entrypoint (no-op at runtime; the codegen reads the call site).
-export { Route, Entrypoint } from "./runtime/route.ts";
 export type {
-  RouteConfig,
-  RouteObject,
-  RoutePageProps,
   SearchSpec,
   InferSearch,
   InferParams,
 } from "./runtime/route.ts";
 
 export { App } from "./runtime/router/app.tsx";
-export { EntryPointContainer } from "./runtime/router/page-renderer.tsx";
 export {
   useNavigate,
   useLocation,
@@ -22,10 +12,10 @@ export {
   useSearchParams,
   useDeferredSearchParams,
   usePrefetch,
+  useRefresh,
   useIsNavigating,
   useSelectedLayoutSegment,
 } from "./runtime/router/context.ts";
-export type { LoadedSubEntrypoint } from "./runtime/router/types.ts";
 export { Link } from "./runtime/link.tsx";
 export {
   Window,
@@ -68,6 +58,7 @@ export {
  *     `createEnvironment({ fetch, subscribe })` with helpers imported from
  *     `react-crucible/runtime/local-graphql.ts`
  *   - `swUpdate` → `<AppShell swUpdate={swUpdate}>` (#53)
+ *   - `relayPersistence` → Relay RecordSource persistence options.
  *
  * Each export is independently optional. Apps that ship no config
  * file get the original zero-config bundle. Apps that export only
@@ -110,6 +101,15 @@ export type CrucibleConfig = {
   network?: {
     fetch?: import("./runtime/environment.ts").FetchLike;
     subscribe?: import("./runtime/environment.ts").SubscribeLike;
+  };
+  /**
+   * Relay RecordSource persistence options. `scope` is appended to the
+   * localStorage key so authenticated apps can avoid hydrating user A's
+   * cached records into user B's environment on shared devices.
+   */
+  relayPersistence?: {
+    persistStore?: boolean;
+    scope?: string | null;
   };
   /**
    * Optional local GraphQL executor. When exported from
