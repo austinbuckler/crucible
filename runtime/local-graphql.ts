@@ -416,6 +416,10 @@ function throwIfAborted(signal: AbortSignal | null | undefined): void {
   if (signal?.aborted) throw makeAbortError();
 }
 
+function dropCachedWorker(options: LocalGraphQLWorkerOptions, worker: Worker): void {
+  if (workerCache.get(options) === worker) workerCache.delete(options);
+}
+
 export function createLocalGraphQLWorkerFetch(
   options: LocalGraphQLWorkerOptions,
 ): FetchLike {
@@ -462,6 +466,10 @@ export function createLocalGraphQLWorkerFetch(
       const rejectPending = (error: Error) => {
         for (const entry of pending.values()) entry.reject(error);
         pending.clear();
+        if (worker) {
+          dropCachedWorker(options, worker);
+          worker = null;
+        }
       };
       worker.addEventListener("error", (event) => {
         rejectPending(new Error(event.message || "Local GraphQL worker failed."));
@@ -476,9 +484,10 @@ export function createLocalGraphQLWorkerFetch(
   return async (input, init) => {
     const id = nextId++;
     const activeWorker = getWorker();
-    if (init.signal?.aborted) throw makeAbortError();
+    throwIfAborted(init.signal);
 
     const body = await requestBodyToString(init.body);
+    throwIfAborted(init.signal);
     let onAbort: (() => void) | null = null;
     return new Promise<Response>((resolve, reject) => {
       onAbort = () => {
@@ -569,6 +578,10 @@ export function createLocalGraphQLWorkerSubscribe(
           entry.error(error);
         }
         pending.clear();
+        if (worker) {
+          dropCachedWorker(options, worker);
+          worker = null;
+        }
       };
       worker.addEventListener("error", (event) => {
         errorPending(new Error(event.message || "Local GraphQL worker failed."));
@@ -586,11 +599,13 @@ export function createLocalGraphQLWorkerSubscribe(
       const activeWorker = getWorker();
       let disposed = false;
       let finished = false;
+      let sent = false;
 
       void (async () => {
         try {
-          if (init.signal?.aborted) throw makeAbortError();
+          throwIfAborted(init.signal);
           const body = await requestBodyToString(init.body);
+          throwIfAborted(init.signal);
           if (disposed) return;
 
           pending.set(id, {
@@ -602,6 +617,7 @@ export function createLocalGraphQLWorkerSubscribe(
             },
           });
 
+          sent = true;
           activeWorker.postMessage({
             type: "crucible:local-graphql:subscribe",
             id,
@@ -620,7 +636,7 @@ export function createLocalGraphQLWorkerSubscribe(
       return () => {
         disposed = true;
         pending.delete(id);
-        if (finished) return;
+        if (finished || !sent) return;
         activeWorker.postMessage({
           type: "crucible:local-graphql:cancel",
           id,
@@ -659,10 +675,12 @@ export function prepareLocalGraphQL<TContext = unknown>(
     };
     const onError = (event: ErrorEvent) => {
       cleanup();
+      dropCachedWorker(options, worker);
       reject(new Error(event.message || "Local GraphQL worker failed to start."));
     };
     const onMessageError = () => {
       cleanup();
+      dropCachedWorker(options, worker);
       reject(new Error("Local GraphQL worker sent an unreadable startup message."));
     };
 
