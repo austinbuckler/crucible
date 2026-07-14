@@ -419,7 +419,7 @@ describe("runCodegen — full pipeline", () => {
       "src/app/page.tsx": "export default function P(){return null}",
       "src/app/crucible.config.ts": `
         import type { CrucibleConfig } from "crucible";
-        export const network: CrucibleConfig["network"] = {}, localGraphQL: CrucibleConfig["localGraphQL"] = {} as never;
+        export const network: CrucibleConfig["network"] = { fetch: () => { return fetch("/api/graphql"); } }, localGraphQL: CrucibleConfig["localGraphQL"] = {} as never;
       `,
     });
     runCodegen({ appRoot: root });

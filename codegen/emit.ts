@@ -213,14 +213,28 @@ function readConfigExports(configPath: string): Set<string> {
 }
 
 function hasDirectExportDeclaration(source: string, name: string): boolean {
-    const directDecl = /\bexport\s+(?:const|let|var)\s+([\s\S]*?)(?=;|\n\s*export\b|$)/g;
+    const directDecl = /\bexport\s+(?:const|let|var)\s+/g;
     for (const match of source.matchAll(directDecl)) {
-        const declaration = match[1] ?? "";
+        const declaration = readDirectExportDeclaration(source, match.index + match[0].length);
         for (const declarator of splitTopLevelDeclarators(declaration)) {
             if (new RegExp(`^\\s*${name}\\b`).test(declarator)) return true;
         }
     }
     return false;
+}
+
+function readDirectExportDeclaration(source: string, start: number): string {
+    let depth = 0;
+    for (let i = start; i < source.length; i++) {
+        const ch = source[i];
+        if (ch === "{" || ch === "[" || ch === "(") depth++;
+        if (ch === "}" || ch === "]" || ch === ")") depth = Math.max(0, depth - 1);
+        if (depth === 0 && ch === ";") return source.slice(start, i);
+        if (depth === 0 && ch === "\n" && /^\s*export\b/.test(source.slice(i + 1))) {
+            return source.slice(start, i);
+        }
+    }
+    return source.slice(start);
 }
 
 function splitTopLevelDeclarators(declaration: string): string[] {
