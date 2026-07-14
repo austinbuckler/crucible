@@ -427,4 +427,18 @@ describe("runCodegen — full pipeline", () => {
     expect(main).toContain("network as __cruxNetwork, localGraphQL as __cruxLocalGraphQL");
     rmSync(root, { recursive: true });
   });
+
+  test("main.tsx config export detection ignores initializer object properties", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        export const network = { fetch: globalThis.fetch, localGraphQL: false };
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain('import { network as __cruxNetwork }');
+    expect(main).not.toContain("__cruxLocalGraphQL");
+    rmSync(root, { recursive: true });
+  });
 });

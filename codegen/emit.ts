@@ -216,9 +216,28 @@ function hasDirectExportDeclaration(source: string, name: string): boolean {
     const directDecl = /\bexport\s+(?:const|let|var)\s+([^;]+)/g;
     for (const match of source.matchAll(directDecl)) {
         const declaration = match[1] ?? "";
-        if (new RegExp(`(?:^|,)\\s*${name}\\b`).test(declaration)) return true;
+        for (const declarator of splitTopLevelDeclarators(declaration)) {
+            if (new RegExp(`^\\s*${name}\\b`).test(declarator)) return true;
+        }
     }
     return false;
+}
+
+function splitTopLevelDeclarators(declaration: string): string[] {
+    const parts: string[] = [];
+    let start = 0;
+    let depth = 0;
+    for (let i = 0; i < declaration.length; i++) {
+        const ch = declaration[i];
+        if (ch === "{" || ch === "[" || ch === "(") depth++;
+        if (ch === "}" || ch === "]" || ch === ")") depth = Math.max(0, depth - 1);
+        if (ch === "," && depth === 0) {
+            parts.push(declaration.slice(start, i));
+            start = i + 1;
+        }
+    }
+    parts.push(declaration.slice(start));
+    return parts;
 }
 
 function hasNamedExport(source: string, name: string): boolean {

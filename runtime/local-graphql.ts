@@ -59,33 +59,35 @@ type WorkerRequestInit = {
   body?: string;
 };
 
+type WorkerMessageId = string;
+
 type WorkerRequestMessage = {
   type: "crucible:local-graphql:request";
-  id: number;
+  id: WorkerMessageId;
   input: string;
   init: WorkerRequestInit;
 };
 
 type WorkerInitMessage = {
   type: "crucible:local-graphql:init";
-  id: number;
+  id: WorkerMessageId;
 };
 
 type WorkerCancelMessage = {
   type: "crucible:local-graphql:cancel";
-  id: number;
+  id: WorkerMessageId;
 };
 
 type WorkerSubscribeMessage = {
   type: "crucible:local-graphql:subscribe";
-  id: number;
+  id: WorkerMessageId;
   input: string;
   init: WorkerRequestInit;
 };
 
 type WorkerResponseMessage = {
   type: "crucible:local-graphql:response";
-  id: number;
+  id: WorkerMessageId;
   status: number;
   statusText: string;
   headers: Array<[string, string]>;
@@ -94,7 +96,7 @@ type WorkerResponseMessage = {
 
 type WorkerErrorMessage = {
   type: "crucible:local-graphql:error";
-  id: number;
+  id: WorkerMessageId;
   error: {
     name?: string;
     message: string;
@@ -103,13 +105,13 @@ type WorkerErrorMessage = {
 
 type WorkerSubscriptionNextMessage = {
   type: "crucible:local-graphql:subscription:next";
-  id: number;
+  id: WorkerMessageId;
   body: string;
 };
 
 type WorkerSubscriptionCompleteMessage = {
   type: "crucible:local-graphql:subscription:complete";
-  id: number;
+  id: WorkerMessageId;
 };
 
 type WorkerInboundMessage =
@@ -125,15 +127,16 @@ type WorkerOutboundMessage =
 
 const workerCache = new WeakMap<LocalGraphQLWorkerOptions, Worker>();
 const bootstrapCache = new WeakMap<LocalGraphQLFetchOptions, Promise<void>>();
+const localGraphQLClientId = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
 let nextWorkerRequestIdValue = 1;
 let nextWorkerSubscriptionIdValue = -1;
 
-function nextWorkerRequestId(): number {
-  return nextWorkerRequestIdValue++;
+function nextWorkerRequestId(): WorkerMessageId {
+  return `${localGraphQLClientId}:request:${nextWorkerRequestIdValue++}`;
 }
 
-function nextWorkerSubscriptionId(): number {
-  return nextWorkerSubscriptionIdValue--;
+function nextWorkerSubscriptionId(): WorkerMessageId {
+  return `${localGraphQLClientId}:subscription:${nextWorkerSubscriptionIdValue--}`;
 }
 
 function runLocalGraphQLBootstrap(options: LocalGraphQLFetchOptions): Promise<void> {
@@ -452,7 +455,7 @@ export function createLocalGraphQLWorkerFetch(
 ): FetchLike {
   let worker: Worker | null = null;
   const pending = new Map<
-    number,
+    WorkerMessageId,
     {
       resolve: (response: Response) => void;
       reject: (error: Error) => void;
@@ -549,7 +552,7 @@ export function createLocalGraphQLWorkerSubscribe(
 ): SubscribeLike {
   let worker: Worker | null = null;
   const pending = new Map<
-    number,
+    WorkerMessageId,
     {
       next: (response: GraphQLResponse) => void;
       complete: () => void;
@@ -725,9 +728,9 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
 ): void {
   const localFetch = createLocalGraphQLFetch(options);
   const localSubscribe = createLocalGraphQLSubscribe(options);
-  const cancelled = new Set<number>();
-  const subscriptions = new Map<number, { unsubscribe: () => void; abort: () => void }>();
-  const requestControllers = new Map<number, AbortController>();
+  const cancelled = new Set<WorkerMessageId>();
+  const subscriptions = new Map<WorkerMessageId, { unsubscribe: () => void; abort: () => void }>();
+  const requestControllers = new Map<WorkerMessageId, AbortController>();
   const scope = globalThis as unknown as LocalGraphQLWorkerScope;
 
   scope.addEventListener(
