@@ -312,6 +312,9 @@ function stripCommentsAndStrings(source: string): string {
 function isRegexLiteralStart(strippedPrefix: string): boolean {
     const trimmed = strippedPrefix.trimEnd();
     if (trimmed.length === 0) return true;
+    if (/(^|[^\w$])(?:return|throw|case|delete|typeof|void|new|yield)$/.test(trimmed)) {
+        return true;
+    }
     const prev = trimmed[trimmed.length - 1];
     return prev != null && "([{=,:;!&|?+-*~^<>".includes(prev);
 }

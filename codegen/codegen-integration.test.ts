@@ -385,6 +385,7 @@ describe("runCodegen — full pipeline", () => {
         // export const network = { fetch: globalThis.fetch };
         const text = "export const localGraphQL = {}";
         const pattern = /export const swUpdate/;
+        function matcher() { return /export const localGraphQL/; }
         const network = { fetch: globalThis.fetch };
         export { network as notNetwork };
       `,

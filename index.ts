@@ -240,6 +240,7 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
         configureServer(server: ViteDevServer) {
             const appDir = join(appRoot, "src", "app");
             const manifestPath = join(appRoot, "src", "app", "manifest.ts");
+            const configPath = join(appRoot, "src", "app", "crucible.config.ts");
             const persistedQueriesPath = join(
                 appRoot,
                 "persisted-queries.json",
@@ -290,6 +291,11 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
                 }
                 if (!file.startsWith(appDir)) return;
                 if (!/\.(tsx|ts|graphql)$/.test(file)) return;
+                if (file === configPath) {
+                    regen("config-change");
+                    server.ws.send({ type: "full-reload" });
+                    return;
+                }
                 // Manifest file content changes still need a refresh.
                 if (file === manifestPath) {
                     const refreshed = loadManifestConfig();
