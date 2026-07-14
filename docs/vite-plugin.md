@@ -51,6 +51,10 @@ type CrucibleOptions = {
   appRoot?: string;
   pwa?: PWAConfig;
   crucibleSpecifier?: string;
+  connectSrcAllowlist?: ReadonlyArray<string>;
+  experimental?: {
+    reactViewTransitions?: boolean;
+  };
 };
 ```
 
@@ -59,6 +63,25 @@ type CrucibleOptions = {
 | `appRoot` | `process.cwd()` | The consuming app's root. Where `src/app/`, `persisted-queries.json`, and `.crucible/` live. |
 | `pwa` | `null` | Fallback PWA config used when `src/app/manifest.ts` doesn't exist. Prefer the file-based manifest. |
 | `crucibleSpecifier` | `"react-crucible"` | npm specifier for crucible itself, embedded into generated `import` statements. Override when published or aliased under a different name. |
+| `connectSrcAllowlist` | `[]` | Extra CSP `connect-src` origins for generated `index.html`. |
+| `experimental.reactViewTransitions` | `false` | Enables React canary `<ViewTransition>` wrapping for route content when the installed React runtime exports it. |
+
+### Experimental React View Transitions
+
+Crucible follows Next.js' explicit opt-in shape for React View Transitions:
+
+```ts
+crucible({
+  experimental: {
+    reactViewTransitions: true,
+  },
+})
+```
+
+When enabled, the router wraps route content in React's canary
+`<ViewTransition>` component if the installed React runtime exports it. Stable
+React runtimes fall back to regular `useTransition` + Suspense behavior.
+Crucible does not call `document.startViewTransition` directly.
 
 ## Hooks (in order)
 
@@ -88,6 +111,7 @@ Injects three build-time constants via Vite's `define` map. The runtime reads th
 | `CRUCIBLE_SW_URL` | `"/sw.js"` if PWA configured, else `null` | `<AppShell>` decides whether to register the service worker |
 | `CRUCIBLE_MANIFEST_URL` | `"/manifest.webmanifest"` if PWA configured, else `null` | `<DocumentHead>` decides whether to emit `<link rel="manifest">` |
 | `CRUCIBLE_SCHEMA_HASH` | FNV-1a of `schema.graphql` content | Relay environment uses it as the localStorage cache key, so a schema change orphans stale records |
+| `CRUCIBLE_REACT_VIEW_TRANSITIONS` | `true` when `experimental.reactViewTransitions` is enabled | Router decides whether to use React canary `<ViewTransition>` when available |
 
 ### `resolveId` + `load`: virtual modules
 

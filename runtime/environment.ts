@@ -38,6 +38,10 @@ const SCHEMA_HASH = import.meta.env.CRUCIBLE_SCHEMA_HASH ?? "noschema";
 const STORAGE_PREFIX = "crucible.relay-cache.";
 const SCHEMA_STORAGE_KEY = `${STORAGE_PREFIX}${SCHEMA_HASH}`;
 const PERSIST_DEBOUNCE_MS = 500;
+const RELAY_RESOLVER_RECORD_TYPENAME = "__RELAY_RESOLVER__";
+
+type PersistedRecord = Record<string, unknown>;
+type PersistedRecordMap = Record<string, PersistedRecord | null | undefined>;
 
 function storageKeyForScope(scope?: string | null): string {
   if (!scope) return SCHEMA_STORAGE_KEY;
@@ -72,10 +76,35 @@ function hydrateRecordSource(storageKey: string): RecordSource {
     if (!raw) return new RecordSource();
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return new RecordSource();
-    return new RecordSource(parsed);
+    return new RecordSource(filterPersistedResolverRecords(parsed));
   } catch {
     return new RecordSource();
   }
+}
+
+function filterPersistedResolverRecords(
+  records: unknown,
+): PersistedRecordMap | undefined {
+  if (!records || typeof records !== "object") return undefined;
+  const next: PersistedRecordMap = {};
+  for (const [id, record] of Object.entries(records)) {
+    if (record != null && typeof record !== "object") continue;
+    if (isRelayResolverRecord(record)) continue;
+    next[id] = record as PersistedRecord | null | undefined;
+  }
+  return next;
+}
+
+function isRelayResolverRecord(record: unknown): boolean {
+  return !!record &&
+    typeof record === "object" &&
+    (record as { __typename?: unknown }).__typename === RELAY_RESOLVER_RECORD_TYPENAME;
+}
+
+export function serializeRecordSourceForPersistence(
+  source: RecordSource,
+): PersistedRecordMap | undefined {
+  return filterPersistedResolverRecords(source.toJSON());
 }
 
 type Persister = {
@@ -99,7 +128,10 @@ export function makePersister(
         if (disposed) return;
         if (typeof localStorage === "undefined") return;
         try {
-          localStorage.setItem(storageKey, JSON.stringify(source.toJSON()));
+          localStorage.setItem(
+            storageKey,
+            JSON.stringify(serializeRecordSourceForPersistence(source)),
+          );
         } catch {
           try {
             localStorage.removeItem(storageKey);

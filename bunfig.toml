@@ -1,6 +1,8 @@
+preload = ["./bun-relay-artifact-loader.ts"]
+
 [test]
 # Register happy-dom globally before any test file runs so `window`,
 # `document`, navigator, etc. behave like a browser. The runtime layer
 # (router, platform, error boundary, codegen-emitted entrypoints) assumes
 # a DOM; this preload lets us test it without per-file scaffolding.
-preload = ["./happydom.ts"]
+preload = ["./happydom.ts", "./bun-relay-artifact-loader.ts"]

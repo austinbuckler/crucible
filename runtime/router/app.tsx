@@ -11,6 +11,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import * as React from "react";
 import { ErrorBoundary, type FallbackProps } from "react-error-boundary";
 import { RelayEnvironmentProvider } from "react-relay";
 import type { Environment } from "../environment.ts";
@@ -48,7 +49,6 @@ import {
   useFocusManagement,
   useScrollRestoration,
 } from "./use-scroll-and-focus.ts";
-import { withViewTransition } from "./view-transitions.ts";
 import { RouteOutlet } from "./outlet.tsx";
 
 export type AppProps = {
@@ -62,9 +62,10 @@ export type AppProps = {
   // Fallback rendered by the top-level error boundary. Defaults to a
   // built-in. Per-frame `error.tsx` files take precedence when present.
   errorFallback?: ComponentType<FallbackProps>;
-  // Wrap state changes in `document.startViewTransition` when supported.
-  // Default `true`. Set `false` if your animations conflict with the
-  // browser's transition snapshots.
+  // Enable React's canary `<ViewTransition>` wrapper when the installed
+  // React runtime exports it. Defaults to the Vite plugin's
+  // `experimental.reactViewTransitions` flag. Crucible never calls the
+  // native `document.startViewTransition` API directly.
   viewTransitions?: boolean;
   // Restore scroll position on back/forward, scroll-to-top on push, and
   // scroll-to-hash on hash-bearing URLs. Default `true`.
@@ -108,6 +109,18 @@ export type AppProps = {
     durationMs: number;
   }) => void;
 };
+
+const DEFAULT_REACT_VIEW_TRANSITIONS =
+  import.meta.env.CRUCIBLE_REACT_VIEW_TRANSITIONS === true;
+
+type ReactViewTransitionComponent = ComponentType<{
+  children?: ReactNode;
+  default?: "auto" | "none" | (string & {});
+}>;
+
+const ReactViewTransition = (React as typeof React & {
+  ViewTransition?: ReactViewTransitionComponent;
+}).ViewTransition;
 
 type BootingRouterState = {
   status: "booting";
@@ -207,7 +220,7 @@ export function acknowledgeResolutionOwner(
   const owner =
     owners.committed?.id === attemptId
       ? owners.committed
-      : owners.pending.get(attemptId) ?? owners.abandoned.get(attemptId);
+      : owners.pending.get(attemptId);
   if (!owner || owner.state === "disposed") return null;
 
   const firstCommitAck = !owner.committedAcked;
@@ -275,12 +288,27 @@ function getResolutionOwner(
   return owners.pending.get(attemptId) ?? owners.abandoned.get(attemptId) ?? null;
 }
 
+export function canRenderResolutionOwner(
+  owners: RouterOwners,
+  attemptId: number,
+): boolean {
+  const owner = getResolutionOwner(owners, attemptId);
+  return !!owner && owner.state === "committed";
+}
+
+export function canStartResolutionOwnerCommit(
+  owners: RouterOwners,
+  attemptId: number,
+): boolean {
+  return owners.pending.get(attemptId)?.state === "pending";
+}
+
 export function App({
   routes,
   environment,
   onError,
   errorFallback = DefaultError,
-  viewTransitions = true,
+  viewTransitions = DEFAULT_REACT_VIEW_TRANSITIONS,
   restoreScroll = true,
   manageFocus = true,
   bootFallback = <DefaultLoading />,
@@ -482,31 +510,33 @@ export function App({
         startedAt,
         resolution,
       });
-      const commit = () => {
-        historyOp();
-        // Wrap the route swap in `startTransition` so React keeps the
-        // outgoing screen on-screen until the new route's queries
-        // resolve. Without this, suspending the new page tears the old
-        // tree down to the nearest <Suspense> and shows its fallback
-        // (DefaultLoading) for the full network round-trip — which is
-        // what the user was hitting on every nav. The pre-loaded
-        // `PreloadedQuery` refs already kicked off in `resolveAndLoad`,
-        // so the transition simply parks the commit until those
-        // resolve, then atomically swaps to the new tree.
-        startTransition(() => {
-          setState({
+      if (!canStartResolutionOwnerCommit(ownersRef.current!, owner.id)) return;
+      historyOp();
+      // Wrap the route swap in `startTransition` so React keeps the
+      // outgoing screen on-screen until the new route's queries resolve.
+      // Without this, suspending the new page tears the old tree down to
+      // the nearest <Suspense> and shows its fallback (DefaultLoading) for
+      // the full network round-trip. The pre-loaded `PreloadedQuery` refs
+      // already kicked off in `resolveAndLoad`, so the transition simply
+      // parks the commit until those resolve, then atomically swaps to the
+      // new tree.
+      startTransition(() => {
+        setState((current) => {
+          if (!canStartResolutionOwnerCommit(ownersRef.current!, owner.id)) {
+            return current;
+          }
+          return {
             status: "ready",
             attemptId: owner.id,
             location: newLocation,
             navSource: source,
             resolution,
             startedAt,
-          });
+          };
         });
-      };
-      withViewTransition(commit, viewTransitions);
+      });
     },
-    [buckets, env, match, viewTransitions],
+    [buckets, env, match],
   );
 
   // Stable matcher reference for prefetch — caller can override.
@@ -582,6 +612,23 @@ export function App({
     [onError],
   );
 
+  const routeContent = state.status === "booting" ? (
+    bootFallback
+  ) : (
+    <Suspense fallback={<DefaultLoading />}>
+      <RouteOutlet
+        resolution={state.resolution}
+        rawSearch={state.location.search}
+        onError={handleError}
+      />
+    </Suspense>
+  );
+  const transitionContent = viewTransitions && ReactViewTransition ? (
+    <ReactViewTransition default="auto">
+      {routeContent}
+    </ReactViewTransition>
+  ) : routeContent;
+
   return (
     <PlatformProvider value={environment.platform}>
       <RelayEnvironmentProvider environment={environment.relay}>
@@ -591,17 +638,7 @@ export function App({
             onError={handleError}
           >
             <NotFoundBoundary fallback={<DefaultNotFound />}>
-              {state.status === "booting" ? (
-                bootFallback
-              ) : (
-                <Suspense fallback={<DefaultLoading />}>
-                  <RouteOutlet
-                    resolution={state.resolution}
-                    rawSearch={state.location.search}
-                    onError={handleError}
-                  />
-                </Suspense>
-              )}
+              {transitionContent}
               {/* Mount once at App-level so imperative `openAppWindow(<X/>)`
                   portals join the same React tree (Relay env, platform,
                   navigation, all flow through). */}

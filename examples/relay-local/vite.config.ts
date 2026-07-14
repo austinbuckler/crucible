@@ -43,6 +43,9 @@ export default defineConfig({
     crucible({
       appRoot,
       crucibleSpecifier: "react-crucible",
+      experimental: {
+        reactViewTransitions: true,
+      },
     }),
   ],
   resolve: {

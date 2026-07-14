@@ -15,6 +15,7 @@ const {
   RETRY_STATUSES,
   createEnvironment,
   NODE_MISSING_FIELD_HANDLER,
+  serializeRecordSourceForPersistence,
 } = await import("./environment.ts");
 
 const STORAGE_PREFIX = "crucible.relay-cache.";
@@ -128,6 +129,21 @@ describe("makePersister", () => {
     persister.schedule();
     persister.dispose();
     expect(() => persister.dispose()).not.toThrow();
+  });
+
+  test("omits Relay resolver records from persisted snapshots", () => {
+    const source = new RecordSource({
+      "client:root": { __id: "client:root", __typename: "__Root" },
+      "client:resolver:app": {
+        __id: "client:resolver:app",
+        __typename: "__RELAY_RESOLVER__",
+        __resolverLiveStateValue: {},
+      },
+    });
+
+    expect(serializeRecordSourceForPersistence(source)).toEqual({
+      "client:root": { __id: "client:root", __typename: "__Root" },
+    });
   });
 });
 

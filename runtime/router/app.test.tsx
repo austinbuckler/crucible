@@ -197,6 +197,50 @@ describe("App boot ownership", () => {
       environment.dispose();
     }
   });
+
+  test("latest same-tick navigation wins", async () => {
+    resetTestUrl("/");
+    const environment = makeTestEnvironment();
+    let didNavigate = false;
+
+    function Home() {
+      const navigate = useNavigate();
+      useLayoutEffect(() => {
+        if (didNavigate) return;
+        didNavigate = true;
+        navigate("/b");
+        navigate("/c");
+      }, [navigate]);
+      return <div>HOME</div>;
+    }
+
+    try {
+      render(
+        <MetadataDefaultsProvider value={TEST_DEFAULTS}>
+          <App
+            routes={[
+              makeRoute("/", Home),
+              makeRoute("/b", () => <div>B</div>),
+              makeRoute("/c", () => <div>C</div>),
+            ]}
+            environment={environment}
+            matcher={(routes, pathname) => {
+              const route = routes.find((r) => r.path === pathname);
+              return route ? { route, params: {} } : null;
+            }}
+          />
+        </MetadataDefaultsProvider>,
+      );
+
+      await waitFor(() => {
+        expect(document.body.textContent).toContain("C");
+      });
+      expect(window.location.pathname).toBe("/c");
+      expect(document.body.textContent).not.toContain("B");
+    } finally {
+      environment.dispose();
+    }
+  });
 });
 
 function resetTestUrl(pathname: string): void {

@@ -15,9 +15,14 @@ const originalStorageDescriptor = Object.getOwnPropertyDescriptor(
   navigator,
   "storage",
 );
+const originalOnlineDescriptor = Object.getOwnPropertyDescriptor(
+  navigator,
+  "onLine",
+);
 
 afterEach(() => {
   restoreNavigatorStorage();
+  restoreNavigatorOnline();
 });
 
 describe("app graph storage state", () => {
@@ -117,6 +122,33 @@ describe("app graph sync state", () => {
     expect(retry).toHaveBeenCalledTimes(1);
     cleanup();
   });
+
+  test("cleanup restores default sync state from current online status", () => {
+    const cleanup = configureSyncStatus({
+      getSnapshot: () => ({ online: true, status: "SYNCING" }),
+    });
+    setNavigatorOnline(false);
+
+    cleanup();
+
+    expect(getSyncSnapshot().online).toBe(false);
+    expect(getSyncSnapshot().status).toBe("OFFLINE");
+  });
+
+  test("cleanup defaults online to true when navigator.onLine is missing", () => {
+    const cleanup = configureSyncStatus({
+      getSnapshot: () => ({ online: false, status: "OFFLINE" }),
+    });
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      value: undefined,
+    });
+
+    cleanup();
+
+    expect(getSyncSnapshot().online).toBe(true);
+    expect(getSyncSnapshot().status).toBe("IDLE");
+  });
 });
 
 function setNavigatorStorage(storage: Partial<StorageManager>): void {
@@ -131,5 +163,20 @@ function restoreNavigatorStorage(): void {
     Object.defineProperty(navigator, "storage", originalStorageDescriptor);
   } else {
     delete (navigator as { storage?: StorageManager }).storage;
+  }
+}
+
+function setNavigatorOnline(online: boolean): void {
+  Object.defineProperty(navigator, "onLine", {
+    configurable: true,
+    value: online,
+  });
+}
+
+function restoreNavigatorOnline(): void {
+  if (originalOnlineDescriptor) {
+    Object.defineProperty(navigator, "onLine", originalOnlineDescriptor);
+  } else {
+    delete (navigator as { onLine?: boolean }).onLine;
   }
 }

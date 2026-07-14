@@ -133,7 +133,7 @@ export type SyncStatusSource = {
 };
 
 const DEFAULT_SYNC: AppSyncSnapshot = {
-  online: typeof navigator === "undefined" ? true : navigator.onLine,
+  online: readNavigatorOnline(),
   status: "IDLE",
   pendingMutations: 0,
   lastSyncedAt: null,
@@ -157,7 +157,7 @@ export function configureSyncStatus(source: SyncStatusSource): () => void {
     syncSourceUnsubscribe?.();
     syncSourceUnsubscribe = null;
     syncSource = null;
-    setSyncSnapshot(DEFAULT_SYNC);
+    setSyncSnapshot(normalizeSyncSnapshot({}));
   };
 }
 
@@ -215,9 +215,7 @@ function normalizeSyncSnapshot(
 ): AppSyncSnapshot {
   const online = typeof partial.online === "boolean"
     ? partial.online
-    : typeof navigator === "undefined"
-      ? true
-      : navigator.onLine;
+    : readNavigatorOnline();
   return {
     online,
     status: partial.status ?? (online ? "IDLE" : "OFFLINE"),
@@ -227,6 +225,11 @@ function normalizeSyncSnapshot(
     retryAt: partial.retryAt ?? null,
     conflictCount: partial.conflictCount ?? 0,
   };
+}
+
+function readNavigatorOnline(): boolean {
+  if (typeof navigator === "undefined") return true;
+  return typeof navigator.onLine === "boolean" ? navigator.onLine : true;
 }
 
 function setSyncSnapshot(next: AppSyncSnapshot): void {

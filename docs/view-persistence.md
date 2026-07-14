@@ -147,9 +147,7 @@ Relay-native framework, so the config namespace is simply `persistence`:
 
 ```ts
 export const persistence: CrucibleConfig["persistence"] = {
-  store: "localStorage",
   scope: currentUserId,
-  view: true,
 };
 ```
 

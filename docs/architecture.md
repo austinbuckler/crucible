@@ -123,8 +123,7 @@ sequenceDiagram
   participant Resolve as router/resolve.ts
   participant Match as router/match.ts
   participant Load as router/load.ts
-  participant VT as view-transitions
-  participant React
+  participant React as React Transition
 
   User->>Link: click <Link to="/orders/123">
   Link->>App: navigate("/orders/123")
@@ -134,8 +133,8 @@ sequenceDiagram
   Resolve->>Match: matchRoute(...)
   Resolve->>Load: loadEntrypoint(...) [loadQuery + JSResource.load]
   Resolve-->>App: Resolution
-  App->>VT: withViewTransition(commit)
-  VT->>React: history.pushState + setState
+  App->>App: history.pushState
+  App->>React: startTransition(setState)
   React->>App: commit
   App->>Scroll: useLayoutEffect → scrollBehavior.apply
   App->>App: useEffect → focusBehavior.apply
@@ -156,7 +155,7 @@ Every phase is a small, named function in its own file. Each is testable in isol
 | `onError` | `(err, info) => void` | none | Wire to Sentry/Datadog. Fires for both top-level + per-frame error boundaries. |
 | `onNavigate` | `(event) => void` | none | Pre-resolve hook. `event = { from, to, source, startedAt }`. `startedAt` is `performance.now()` when navigate fired — pair with `onResolve` for nav-latency RUM. |
 | `onResolve` | `(event) => void` | none | Post-commit hook. `event = { location, resolution, startedAt, resolvedAt, durationMs }`. `durationMs = resolvedAt - startedAt`; feed into a p50/p95 histogram. |
-| `viewTransitions` | `boolean` | `true` | Wrap state changes in `document.startViewTransition` when supported. |
+| `viewTransitions` | `boolean` | plugin flag | Wrap route content in React canary `<ViewTransition>` when available; no direct native View Transition API calls. |
 | `restoreScroll` | `boolean` | `true` | Toggle the scroll restoration phase. |
 | `manageFocus` | `boolean` | `true` | Toggle the focus phase. |
 

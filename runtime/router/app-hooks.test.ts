@@ -4,6 +4,7 @@ import {
   abandonPendingResolutionOwners,
   acknowledgeResolutionOwner,
   addResolutionOwner,
+  canRenderResolutionOwner,
   createRouterOwners,
   disposeAllResolutionOwners,
   pickFromLocation,
@@ -138,7 +139,7 @@ describe("router resolution owners", () => {
     expect(disposeCalls).toHaveLength(0);
   });
 
-  test("an abandoned owner can still commit before a newer attempt commits", () => {
+  test("an abandoned owner cannot commit after a newer attempt supersedes it", () => {
     const owners = createRouterOwners();
     const disposeCalls: Resolution[] = [];
     const committed = addResolutionOwner(owners, {
@@ -165,11 +166,10 @@ describe("router resolution owners", () => {
       (resolution) => disposeCalls.push(resolution),
     );
 
-    expect(ack?.owner).toBe(abandoned);
-    expect(ack?.firstCommitAck).toBe(true);
-    expect(owners.committed).toBe(abandoned);
-    expect(abandoned.state).toBe("committed");
-    expect(disposeCalls).toEqual([committed.resolution]);
+    expect(ack).toBeNull();
+    expect(owners.committed).toBe(committed);
+    expect(abandoned.state).toBe("abandoned");
+    expect(disposeCalls).toEqual([]);
   });
 
   test("superseded pending owners dispose after a newer owner commits", () => {
@@ -209,9 +209,11 @@ describe("router resolution owners", () => {
     expect(b.state).toBe("disposed");
     expect(c.state).toBe("committed");
     expect(disposeCalls).toEqual([a.resolution, b.resolution]);
+    expect(canRenderResolutionOwner(owners, b.id)).toBe(false);
+    expect(canRenderResolutionOwner(owners, c.id)).toBe(true);
   });
 
-  test("acknowledging an abandoned owner preserves other abandoned owners", () => {
+  test("acknowledging a pending owner disposes abandoned owners", () => {
     const owners = createRouterOwners();
     const disposeCalls: Resolution[] = [];
     const a = addResolutionOwner(owners, {
@@ -237,18 +239,17 @@ describe("router resolution owners", () => {
       startedAt: 3,
       resolution: makeResolution(),
     });
-    abandonPendingResolutionOwners(owners);
 
-    acknowledgeResolutionOwner(owners, b.id, (resolution) => {
+    acknowledgeResolutionOwner(owners, c.id, (resolution) => {
       disposeCalls.push(resolution);
     });
 
-    expect(owners.committed).toBe(b);
+    expect(owners.committed).toBe(c);
     expect(a.state).toBe("disposed");
-    expect(b.state).toBe("committed");
-    expect(c.state).toBe("abandoned");
-    expect(owners.abandoned.get(c.id)).toBe(c);
-    expect(disposeCalls).toEqual([a.resolution]);
+    expect(b.state).toBe("disposed");
+    expect(c.state).toBe("committed");
+    expect(owners.abandoned.size).toBe(0);
+    expect(disposeCalls).toEqual([a.resolution, b.resolution]);
   });
 
   test("disposeAll disposes committed, pending, and abandoned owners once", () => {

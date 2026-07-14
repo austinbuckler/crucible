@@ -2,6 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { Plugin, ViteDevServer } from "vite";
 import { runCodegen } from "./codegen/run.ts";
+export {
+    isRelayGeneratedArtifact,
+    stripRelayResolverTypeAssertions,
+} from "./relay-artifacts.ts";
+import {
+    isRelayGeneratedArtifact,
+    stripRelayResolverTypeAssertions,
+} from "./relay-artifacts.ts";
 import {
     resolvePWA,
     writeManifestFile,
@@ -33,17 +41,156 @@ export function isAppPageModule(id: string, appRoot: string): boolean {
         (normalized.endsWith("/page.tsx") || normalized.endsWith("/default.tsx"));
 }
 
-export function isRelayGeneratedArtifact(id: string): boolean {
-    return /\/__generated__\/.*\.graphql\.ts(?:\?.*)?$/.test(id.split(sep).join("/"));
+export function stripPageQueryExport(code: string): string {
+    const exportDecl = /(^[ \t]*)export\s+const\s+query\b/gm;
+    let out = "";
+    let cursor = 0;
+
+    for (const match of code.matchAll(exportDecl)) {
+        const start = match.index;
+        if (isInsideStringOrComment(code, start)) continue;
+        const statement = readConstStatement(code, start);
+        if (!statement || hasTopLevelComma(statement.declarator)) continue;
+        out += code.slice(cursor, start);
+        out += `${match[1] ?? ""}const query${statement.afterName}`;
+        cursor = statement.end;
+    }
+
+    return cursor === 0 ? code : out + code.slice(cursor);
 }
 
-export function stripRelayResolverTypeAssertions(code: string): string {
-    return code
-        .replace(
-            /^\([A-Za-z_$][\w$]* satisfies \([\s\S]*?^\) => [\s\S]*?\);\n/gm,
-            "",
-        )
-        .replace(/^\([A-Za-z_$][\w$]* satisfies .*?\);\n/gm, "");
+function isInsideStringOrComment(code: string, offset: number): boolean {
+    let quote: '"' | "'" | "`" | null = null;
+    let escaped = false;
+    let lineComment = false;
+    let blockComment = false;
+
+    for (let i = 0; i < offset; i++) {
+        const ch = code[i];
+        const next = code[i + 1];
+        if (lineComment) {
+            if (ch === "\n") lineComment = false;
+            continue;
+        }
+        if (blockComment) {
+            if (ch === "*" && next === "/") {
+                blockComment = false;
+                i++;
+            }
+            continue;
+        }
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch === "\\") {
+                escaped = true;
+                continue;
+            }
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === "/" && next === "/") {
+            lineComment = true;
+            i++;
+            continue;
+        }
+        if (ch === "/" && next === "*") {
+            blockComment = true;
+            i++;
+            continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    }
+
+    return quote != null || lineComment || blockComment;
+}
+
+function readConstStatement(
+    code: string,
+    start: number,
+): { afterName: string; declarator: string; end: number } | null {
+    const nameStart = code.indexOf("query", start);
+    if (nameStart < 0) return null;
+    const afterNameStart = nameStart + "query".length;
+    const equals = code.indexOf("=", afterNameStart);
+    if (equals < 0) return null;
+
+    let depth = 0;
+    let quote: '"' | "'" | "`" | null = null;
+    let escaped = false;
+    for (let i = equals + 1; i < code.length; i++) {
+        const ch = code[i];
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch === "\\") {
+                escaped = true;
+                continue;
+            }
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") {
+            quote = ch;
+            continue;
+        }
+        if (ch === "(" || ch === "[" || ch === "{") depth++;
+        if (ch === ")" || ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+        if (depth === 0 && ch === ";") {
+            const afterName = code.slice(afterNameStart, i + 1);
+            return {
+                afterName,
+                declarator: code.slice(equals + 1, i),
+                end: i + 1,
+            };
+        }
+        if (depth === 0 && ch === "\n") {
+            const rest = code.slice(i + 1);
+            if (/^\s*(?:export|import|const|let|var|function|type|interface)\b/.test(rest)) {
+                const afterName = code.slice(afterNameStart, i);
+                return {
+                    afterName,
+                    declarator: code.slice(equals + 1, i),
+                    end: i,
+                };
+            }
+        }
+    }
+    const afterName = code.slice(afterNameStart);
+    return { afterName, declarator: code.slice(equals + 1), end: code.length };
+}
+
+function hasTopLevelComma(source: string): boolean {
+    let depth = 0;
+    let quote: '"' | "'" | "`" | null = null;
+    let escaped = false;
+    for (let i = 0; i < source.length; i++) {
+        const ch = source[i];
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch === "\\") {
+                escaped = true;
+                continue;
+            }
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") {
+            quote = ch;
+            continue;
+        }
+        if (ch === "(" || ch === "[" || ch === "{") depth++;
+        if (ch === ")" || ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+        if (depth === 0 && ch === ",") return true;
+    }
+    return false;
 }
 
 export type CrucibleOptions = {
@@ -63,6 +210,12 @@ export type CrucibleOptions = {
     // `'self' ws: wss:`. Pass full schemes — e.g.
     // `["https://api.example.com", "https://*.sentry.io"]`.
     connectSrcAllowlist?: ReadonlyArray<string>;
+    experimental?: {
+        // Enables React's canary `<ViewTransition>` integration for route
+        // swaps. Requires a React runtime that exports `ViewTransition`;
+        // stable React users safely fall back to regular Transition + Suspense.
+        reactViewTransitions?: boolean;
+    };
 };
 
 export type { PWAConfig, PWAIcon } from "./pwa.ts";
@@ -177,6 +330,9 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
                     "import.meta.env.CRUCIBLE_SCHEMA_HASH": JSON.stringify(
                         computeSchemaHash(appRoot),
                     ),
+                    "import.meta.env.CRUCIBLE_REACT_VIEW_TRANSITIONS": JSON.stringify(
+                        options.experimental?.reactViewTransitions === true,
+                    ),
                 },
             };
         },
@@ -223,10 +379,7 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
                 // Vite React Refresh treats non-component exports as refresh
                 // boundary hazards; the page component only needs the local
                 // binding for `usePreloadedQuery(query, data)`.
-                next = next.replace(
-                    /\bexport\s+const\s+query(\s*(?::[^=]+)?=)/g,
-                    "const query$1",
-                );
+                next = stripPageQueryExport(next);
             }
 
             if (isRelayGeneratedArtifact(id)) {
