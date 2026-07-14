@@ -234,6 +234,7 @@ function readDirectExportDeclaration(source: string, start: number): string {
             depth === 0 &&
             ch === "\n" &&
             !source.slice(start, i).trimEnd().endsWith(",") &&
+            !/[=({[?:+\-*/&|.]$/.test(source.slice(start, i).trimEnd()) &&
             !/^\s*,/.test(source.slice(i + 1))
         ) {
             return source.slice(start, i);
