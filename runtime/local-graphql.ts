@@ -132,6 +132,16 @@ type WorkerOutboundMessage =
   | WorkerSubscribeMessage;
 
 const workerCache = new WeakMap<LocalGraphQLWorkerOptions, Worker>();
+const bootstrapCache = new WeakMap<LocalGraphQLFetchOptions, Promise<void>>();
+
+function runLocalGraphQLBootstrap(options: LocalGraphQLFetchOptions): Promise<void> {
+  let promise = bootstrapCache.get(options);
+  if (!promise) {
+    promise = Promise.resolve(options.bootstrap?.());
+    bootstrapCache.set(options, promise);
+  }
+  return promise;
+}
 
 function getLocalGraphQLWorker(options: LocalGraphQLWorkerOptions): Worker {
   const cached = workerCache.get(options);
@@ -231,12 +241,6 @@ export function createLocalGraphQLFetch<TContext = unknown>(
   if (isWorkerOptions(options)) return createLocalGraphQLWorkerFetch(options);
 
   const shouldValidate = options.validate ?? true;
-  let bootstrapPromise: Promise<void> | null = null;
-  const bootstrap = () => {
-    bootstrapPromise ??= Promise.resolve(options.bootstrap?.());
-    return bootstrapPromise;
-  };
-
   return async (input, init) => {
     const method = init.method?.toUpperCase() ?? "GET";
     if (method !== "POST") {
@@ -253,7 +257,7 @@ export function createLocalGraphQLFetch<TContext = unknown>(
     }
 
     try {
-      await bootstrap();
+      await runLocalGraphQLBootstrap(options);
       const document = parse(request.query ?? "");
       if (shouldValidate) {
         const validationErrors = validate(options.schema, document, specifiedRules);
@@ -299,12 +303,6 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
   if (isWorkerOptions(options)) return createLocalGraphQLWorkerSubscribe(options);
 
   const shouldValidate = options.validate ?? true;
-  let bootstrapPromise: Promise<void> | null = null;
-  const bootstrap = () => {
-    bootstrapPromise ??= Promise.resolve(options.bootstrap?.());
-    return bootstrapPromise;
-  };
-
   return (input, init) =>
     RelayObservable.create<GraphQLResponse>((sink) => {
       let active = true;
@@ -325,7 +323,7 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
             return;
           }
 
-          await bootstrap();
+          await runLocalGraphQLBootstrap(options);
           if (!active) return;
 
           const document = parse(request.query ?? "");
@@ -346,6 +344,7 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
                   request,
                 })
               : options.context;
+          if (!active) return;
 
           const result = await subscribe({
             schema: options.schema,
@@ -357,12 +356,17 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
           });
 
           if (!isAsyncIterable<ExecutionResult>(result)) {
+            if (!active) return;
             sink.next(result as GraphQLResponse);
             sink.complete();
             return;
           }
 
           iterator = result[Symbol.asyncIterator]();
+          if (!active) {
+            await iterator.return?.();
+            return;
+          }
           while (active) {
             const next = await iterator.next();
             if (next.done) break;
@@ -586,17 +590,22 @@ export function prepareLocalGraphQL<TContext = unknown>(
   options: LocalGraphQLOptions<TContext>,
 ): Promise<void> {
   if (!isWorkerOptions(options)) {
-    return Promise.resolve(options.bootstrap?.());
+    return runLocalGraphQLBootstrap(options);
   }
 
   const worker = getLocalGraphQLWorker(options);
   const id = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
 
   return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      worker.removeEventListener("message", onMessage);
+      worker.removeEventListener("error", onError);
+      worker.removeEventListener("messageerror", onMessageError);
+    };
     const onMessage = (event: MessageEvent<WorkerInboundMessage>) => {
       const message = event.data;
       if (!message || message.id !== id) return;
-      worker.removeEventListener("message", onMessage);
+      cleanup();
 
       if (message.type === "crucible:local-graphql:error") {
         reject(normalizeWorkerError(message.error));
@@ -605,8 +614,18 @@ export function prepareLocalGraphQL<TContext = unknown>(
 
       resolve();
     };
+    const onError = (event: ErrorEvent) => {
+      cleanup();
+      reject(new Error(event.message || "Local GraphQL worker failed to start."));
+    };
+    const onMessageError = () => {
+      cleanup();
+      reject(new Error("Local GraphQL worker sent an unreadable startup message."));
+    };
 
     worker.addEventListener("message", onMessage);
+    worker.addEventListener("error", onError);
+    worker.addEventListener("messageerror", onMessageError);
     worker.postMessage({
       type: "crucible:local-graphql:init",
       id,
@@ -622,11 +641,6 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
   const cancelled = new Set<number>();
   const subscriptions = new Map<number, { unsubscribe: () => void }>();
   const scope = globalThis as unknown as LocalGraphQLWorkerScope;
-  let bootstrapPromise: Promise<void> | null = null;
-  const bootstrap = () => {
-    bootstrapPromise ??= Promise.resolve(options.bootstrap?.());
-    return bootstrapPromise;
-  };
 
   scope.addEventListener(
     "message",
@@ -644,7 +658,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
       if (message.type === "crucible:local-graphql:init") {
         void (async () => {
           try {
-            await bootstrap();
+            await runLocalGraphQLBootstrap(options);
             scope.postMessage({
               type: "crucible:local-graphql:response",
               id: message.id,
@@ -670,7 +684,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
       if (message.type === "crucible:local-graphql:subscribe") {
         void (async () => {
           try {
-            await bootstrap();
+            await runLocalGraphQLBootstrap(options);
             if (cancelled.has(message.id)) {
               cancelled.delete(message.id);
               return;
@@ -739,7 +753,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
 
       void (async () => {
         try {
-          await bootstrap();
+          await runLocalGraphQLBootstrap(options);
           const response = await localFetch(message.input, {
             method: message.init.method,
             headers: message.init.headers,

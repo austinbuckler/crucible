@@ -57,18 +57,6 @@ export {
   type FetchLike,
   type SubscribeLike,
 } from "./runtime/environment.ts";
-export {
-  createLocalGraphQLFetch,
-  createLocalGraphQLSubscribe,
-  createLocalGraphQLWorkerFetch,
-  createLocalGraphQLWorkerSubscribe,
-  prepareLocalGraphQL,
-  serveLocalGraphQLWorker,
-  type LocalGraphQLContextFactoryArgs,
-  type LocalGraphQLFetchOptions,
-  type LocalGraphQLOptions,
-  type LocalGraphQLWorkerOptions,
-} from "./runtime/local-graphql.ts";
 
 /**
  * Shape of `src/app/crucible.config.ts`. The codegen-emitted main.tsx
@@ -77,7 +65,8 @@ export {
  *
  *   - `network` → `createEnvironment({ fetch: network.fetch })` (#46)
  *   - `localGraphQL` → `await prepareLocalGraphQL(localGraphQL)` then
- *     `createEnvironment({ fetch: createLocalGraphQLFetch(localGraphQL) })`
+ *     `createEnvironment({ fetch, subscribe })` with helpers imported from
+ *     `react-crucible/runtime/local-graphql.ts`
  *   - `swUpdate` → `<AppShell swUpdate={swUpdate}>` (#53)
  *
  * Each export is independently optional. Apps that ship no config
@@ -120,6 +109,7 @@ export type CrucibleConfig = {
    */
   network?: {
     fetch?: import("./runtime/environment.ts").FetchLike;
+    subscribe?: import("./runtime/environment.ts").SubscribeLike;
   };
   /**
    * Optional local GraphQL executor. When exported from

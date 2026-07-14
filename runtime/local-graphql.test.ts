@@ -1,7 +1,11 @@
 /// <reference lib="dom" />
 import { describe, expect, test } from "bun:test";
 import { buildSchema, GraphQLInt, GraphQLObjectType, GraphQLSchema } from "graphql";
-import { createLocalGraphQLFetch, createLocalGraphQLSubscribe } from "./local-graphql.ts";
+import {
+  createLocalGraphQLFetch,
+  createLocalGraphQLSubscribe,
+  prepareLocalGraphQL,
+} from "./local-graphql.ts";
 
 async function readJson(res: Response): Promise<unknown> {
   return res.json();
@@ -154,5 +158,107 @@ describe("createLocalGraphQLSubscribe", () => {
     });
 
     expect(payloads).toEqual([{ data: { count: 1 } }, { data: { count: 2 } }]);
+  });
+
+  test("shares one bootstrap across prepare, fetch, and subscribe", async () => {
+    let bootstrapCount = 0;
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          ok: { type: GraphQLInt, resolve: () => 1 },
+        },
+      }),
+      subscription: new GraphQLObjectType({
+        name: "Subscription",
+        fields: {
+          count: {
+            type: GraphQLInt,
+            subscribe: async function* () {
+              yield { count: 1 };
+            },
+            resolve: (event: { count: number }) => event.count,
+          },
+        },
+      }),
+    });
+    const options = {
+      schema,
+      bootstrap: () => {
+        bootstrapCount++;
+      },
+    };
+
+    await prepareLocalGraphQL(options);
+    await createLocalGraphQLFetch(options)("/api/graphql", {
+      method: "POST",
+      body: JSON.stringify({ query: "query OkQuery { ok }" }),
+    });
+    await new Promise<void>((resolve, reject) => {
+      createLocalGraphQLSubscribe(options)("/api/graphql", {
+        method: "POST",
+        body: JSON.stringify({ query: "subscription CountSubscription { count }" }),
+      }).subscribe({
+        error: reject,
+        complete: resolve,
+      });
+    });
+
+    expect(bootstrapCount).toBe(1);
+  });
+
+  test("returns a subscription source that resolves after unsubscribe", async () => {
+    let releaseSubscribe!: () => void;
+    let markSubscribeStarted!: () => void;
+    const subscribeStarted = new Promise<void>((resolve) => {
+      markSubscribeStarted = resolve;
+    });
+    let sourceReturned = false;
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: "Query",
+        fields: {
+          ok: { type: GraphQLInt, resolve: () => 1 },
+        },
+      }),
+      subscription: new GraphQLObjectType({
+        name: "Subscription",
+        fields: {
+          count: {
+            type: GraphQLInt,
+            subscribe: async () => {
+              await new Promise<void>((resolve) => {
+                releaseSubscribe = resolve;
+                markSubscribeStarted();
+              });
+              return {
+                [Symbol.asyncIterator]() {
+                  return {
+                    next: () => new Promise<IteratorResult<{ count: number }>>(() => {}),
+                    return: async () => {
+                      sourceReturned = true;
+                      return { done: true, value: undefined };
+                    },
+                  };
+                },
+              };
+            },
+            resolve: (event: { count: number }) => event.count,
+          },
+        },
+      }),
+    });
+
+    const subscription = createLocalGraphQLSubscribe({ schema })("/api/graphql", {
+      method: "POST",
+      body: JSON.stringify({ query: "subscription CountSubscription { count }" }),
+    }).subscribe({});
+
+    await subscribeStarted;
+    subscription.unsubscribe();
+    releaseSubscribe();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sourceReturned).toBe(true);
   });
 });

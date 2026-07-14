@@ -364,11 +364,21 @@ function createRelayEnvironment(
           operation,
           variables as Record<string, unknown> | null | undefined,
         );
-        return userSubscribe(GRAPHQL_ENDPOINT, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify(body),
+        return RelayObservable.create<GraphQLResponse>((sink) => {
+          const subscription = userSubscribe(GRAPHQL_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify(body),
+          }).subscribe({
+            next: (payload) => {
+              queueMicrotask(persister.schedule);
+              sink.next(payload);
+            },
+            error: (error: Error) => sink.error(error),
+            complete: () => sink.complete(),
+          });
+          return () => subscription.unsubscribe();
         });
       }) satisfies SubscribeFunction
     : undefined);
@@ -438,8 +448,8 @@ export type CreateEnvironmentOptions = {
 // Two call shapes:
 //   - `createEnvironment(platform?)` — legacy positional form, kept so
 //     the codegen-emitted main.tsx pre-#46 keeps working byte-for-byte.
-//   - `createEnvironment({ platform?, fetch? })` — options bag for the
-//     network seam and any future env-level config.
+//   - `createEnvironment({ platform?, fetch?, subscribe? })` — options bag for
+//     the network seam and any future env-level config.
 export function createEnvironment(platform?: PlatformRuntime): Environment;
 export function createEnvironment(options: CreateEnvironmentOptions): Environment;
 export function createEnvironment(

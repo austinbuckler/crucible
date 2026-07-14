@@ -135,19 +135,22 @@ export function emitMainEntry(ctx: EmitContext): void {
         importNames.length > 0
             ? `import { ${importNames.join(", ")} } from "../src/app/crucible.config.ts";\n`
             : "";
+    const localGraphQLImport = hasLocalGraphQL
+        ? `import { createLocalGraphQLFetch, createLocalGraphQLSubscribe, prepareLocalGraphQL } from "${ctx.crucibleSpecifier}/runtime/local-graphql.ts";\n`
+        : "";
 
     const prepareLocalGraphQL = hasLocalGraphQL
-        ? `if (__cruxLocalGraphQL) await Crucible.prepareLocalGraphQL(__cruxLocalGraphQL);
+        ? `if (__cruxLocalGraphQL) await prepareLocalGraphQL(__cruxLocalGraphQL);
 `
         : "";
     const envSetup = hasLocalGraphQL
         ? hasNetwork
-            ? `const __cruxFetch = __cruxLocalGraphQL ? Crucible.createLocalGraphQLFetch(__cruxLocalGraphQL) : __cruxNetwork?.fetch;
-const __cruxSubscribe = __cruxLocalGraphQL ? Crucible.createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined;
+            ? `const __cruxFetch = __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : __cruxNetwork?.fetch;
+const __cruxSubscribe = __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : __cruxNetwork?.subscribe;
 const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: __cruxLocalGraphQL ? false : true });`
-            : `const environment = Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? Crucible.createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? Crucible.createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: false });`
+            : `const environment = Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: __cruxLocalGraphQL ? false : true });`
         : hasNetwork
-          ? `const environment = Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch });`
+          ? `const environment = Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe });`
           : `const environment = Crucible.createEnvironment();`;
     const appShellOpen = hasSwUpdate
         ? `<Crucible.AppShell swUpdate={__cruxSwUpdate}>`
@@ -156,9 +159,10 @@ const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: 
     const content = `${HEADER}
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import * as Crucible from "crucible";
+import * as Crucible from "${ctx.crucibleSpecifier}/crucible";
 import { routes } from "./routes.ts";
 ${configImport}
+${localGraphQLImport}
 ${prepareLocalGraphQL}${envSetup}
 
 createRoot(document.getElementById("root")!).render(
