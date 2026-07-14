@@ -230,6 +230,9 @@ function readDirectExportDeclaration(source: string, start: number): string {
         if (ch === "{" || ch === "[" || ch === "(") depth++;
         if (ch === "}" || ch === "]" || ch === ")") depth = Math.max(0, depth - 1);
         if (depth === 0 && ch === ";") return source.slice(start, i);
+        if (depth === 0 && ch === "\n" && !/^\s*,/.test(source.slice(i + 1))) {
+            return source.slice(start, i);
+        }
         if (depth === 0 && ch === "\n" && /^\s*export\b/.test(source.slice(i + 1))) {
             return source.slice(start, i);
         }

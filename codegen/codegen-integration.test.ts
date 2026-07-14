@@ -433,6 +433,7 @@ describe("runCodegen — full pipeline", () => {
       "src/app/page.tsx": "export default function P(){return null}",
       "src/app/crucible.config.ts": `
         export const network = { fetch: globalThis.fetch, localGraphQL: false };
+        const helper = 1, localGraphQL = false;
       `,
     });
     runCodegen({ appRoot: root });

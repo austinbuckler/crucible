@@ -331,6 +331,7 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
         resolveAbort = () => resolve({ done: true, value: undefined });
       });
       const onAbort = () => {
+        active = false;
         controller.abort();
         resolveAbort?.();
       };
@@ -409,6 +410,7 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
           while (active) {
             const next = await Promise.race([iterator.next(), abortPromise]);
             if (next.done) break;
+            if (!active) break;
             sink.next(next.value as GraphQLResponse);
           }
           if (active) sink.complete();
@@ -460,6 +462,8 @@ function throwIfAborted(signal: AbortSignal | null | undefined): void {
 
 function addSignalToContext<TContext>(context: TContext, signal: AbortSignal): TContext {
   if (!context || typeof context !== "object" || "signal" in context) return context;
+  const proto = Object.getPrototypeOf(context);
+  if (proto !== Object.prototype && proto !== null) return context;
   return { ...(context as object), signal } as TContext;
 }
 
