@@ -55,7 +55,20 @@ export {
   type CreateEnvironmentOptions,
   type Environment,
   type FetchLike,
+  type SubscribeLike,
 } from "./runtime/environment.ts";
+export {
+  createLocalGraphQLFetch,
+  createLocalGraphQLSubscribe,
+  createLocalGraphQLWorkerFetch,
+  createLocalGraphQLWorkerSubscribe,
+  prepareLocalGraphQL,
+  serveLocalGraphQLWorker,
+  type LocalGraphQLContextFactoryArgs,
+  type LocalGraphQLFetchOptions,
+  type LocalGraphQLOptions,
+  type LocalGraphQLWorkerOptions,
+} from "./runtime/local-graphql.ts";
 
 /**
  * Shape of `src/app/crucible.config.ts`. The codegen-emitted main.tsx
@@ -63,6 +76,8 @@ export {
  * matching framework primitive at boot:
  *
  *   - `network` → `createEnvironment({ fetch: network.fetch })` (#46)
+ *   - `localGraphQL` → `await prepareLocalGraphQL(localGraphQL)` then
+ *     `createEnvironment({ fetch: createLocalGraphQLFetch(localGraphQL) })`
  *   - `swUpdate` → `<AppShell swUpdate={swUpdate}>` (#53)
  *
  * Each export is independently optional. Apps that ship no config
@@ -107,6 +122,15 @@ export type CrucibleConfig = {
     fetch?: import("./runtime/environment.ts").FetchLike;
   };
   /**
+   * Optional local GraphQL executor. When exported from
+   * `src/app/crucible.config.ts`, codegen wraps it with
+   * `prepareLocalGraphQL` before React mounts, then wraps it with
+   * `createLocalGraphQLFetch` and passes the resulting fetch to Relay.
+   * Relay still sends normal GraphQL POSTs; the supplied schema can be a
+   * Pothos schema backed by Drizzle + client-side SQLite/OPFS.
+   */
+  localGraphQL?: import("./runtime/local-graphql.ts").LocalGraphQLOptions;
+  /**
    * Configuration for the service-worker update lifecycle managed by
    * `<AppShell>` (see #29). Tunes idle auto-activate timing and wires
    * observability callbacks (`onUpdateReady`, `onSwError`). The
@@ -144,4 +168,3 @@ export { useDocumentTitle, useMetadata } from "./runtime/metadata.tsx";
 // the codegen dynamic-imports at build time (splash.tsx, manifest.ts) use
 // these globals so the file has no `from "crucible"` imports — Bun's
 // resolver doesn't follow Vite aliases at codegen time.
-

@@ -1,0 +1,34 @@
+{
+  "name": "crucible-relay-local-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "codegen": "bun ../../preflight.ts && relay-compiler && bun ../../cli.ts",
+    "dev": "bun run codegen && vite --host 127.0.0.1",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pothos/core": "^4.13.1",
+    "@pothos/plugin-drizzle": "^0.17.5",
+    "@pothos/plugin-relay": "^4.7.1",
+    "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+    "drizzle-orm": "1.0.0-rc.4",
+    "graphql": "^16.14.2",
+    "react": "^19.2.7",
+    "react-crucible": "link:../..",
+    "react-dom": "^19.2.7",
+    "react-error-boundary": "^6.1.2",
+    "react-relay": "^21.0.1",
+    "relay-runtime": "^21.0.1",
+    "vite": "^8.0.16"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.0.1",
+    "@vitejs/plugin-react": "^6.0.3",
+    "babel-plugin-relay": "^21.0.1",
+    "drizzle-kit": "1.0.0-rc.4",
+    "relay-compiler": "^21.0.1",
+    "typescript": "^6.0.3"
+  }
+}

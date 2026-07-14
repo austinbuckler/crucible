@@ -6,6 +6,7 @@ import {
   Store,
   type GraphQLResponse,
   type MissingFieldHandler,
+  type SubscribeFunction,
 } from "relay-runtime";
 import type { PlatformRuntime } from "./platform.ts";
 import { installWebRuntime } from "./platforms/web.ts";
@@ -124,6 +125,11 @@ export type FetchLike = (
   init: RequestInit,
 ) => Promise<Response>;
 
+export type SubscribeLike = (
+  input: string,
+  init: RequestInit,
+) => RelayObservable<GraphQLResponse>;
+
 // `DOMException` with name "AbortError" — the spec-compliant rejection for
 // an aborted fetch. Mirroring the platform here means downstream callers
 // can do `err.name === "AbortError"` regardless of whether the abort came
@@ -240,12 +246,19 @@ export const NODE_MISSING_FIELD_HANDLER: MissingFieldHandler = {
 
 function createRelayEnvironment(
   userFetch: FetchLike | undefined,
+  userSubscribe: SubscribeLike | undefined,
+  persistStore = true,
 ): { relay: RelayEnvironment; dispose: () => void } {
-  const source = hydrateRecordSource();
+  const source = persistStore ? hydrateRecordSource() : new RecordSource();
   const store = new Store(source);
-  const persister = makePersister(source);
+  const persister = persistStore
+    ? makePersister(source)
+    : { schedule: () => {}, dispose: () => {} } satisfies Persister;
 
-  const network = Network.create((operation, variables) => {
+  const buildGraphQLBody = (
+    operation: { name: string; text?: string | null; id?: string | null },
+    variables: Record<string, unknown> | null | undefined,
+  ) => {
     // Resolve the operation's full text. relay-compiler emits one of:
     //   - `operation.text` (eagerEsModules + non-persisted dev)
     //   - `operation.id` only, with the text in `persisted-queries.json`
@@ -263,11 +276,15 @@ function createRelayEnvironment(
         )}). Re-run \`bun run codegen\`.`,
       );
     }
-    const body = {
+    return {
       operationName: operation.name,
       query: text,
       variables: variables ?? {},
     };
+  };
+
+  const network = Network.create((operation, variables) => {
+    const body = buildGraphQLBody(operation, variables as Record<string, unknown> | null | undefined);
 
     // Return a RelayObservable so Relay's `unsubscribe` (fired when a
     // navigation supersedes a request, or when a component using
@@ -341,7 +358,20 @@ function createRelayEnvironment(
         controller.abort();
       };
     });
-  });
+  }, userSubscribe
+    ? ((operation, variables) => {
+        const body = buildGraphQLBody(
+          operation,
+          variables as Record<string, unknown> | null | undefined,
+        );
+        return userSubscribe(GRAPHQL_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(body),
+        });
+      }) satisfies SubscribeFunction
+    : undefined);
 
   return {
     relay: new RelayEnvironment({
@@ -396,6 +426,13 @@ export type CreateEnvironmentOptions = {
    *   createEnvironment({ fetch: idempotencyFetch });
    */
   fetch?: FetchLike;
+  subscribe?: SubscribeLike;
+  /**
+   * Persist Relay's normalized RecordSource to localStorage. Defaults to true
+   * for remote GraphQL apps. Local-first apps with a durable SQLite store
+   * should set this to false so SQLite is the only persistent cache.
+   */
+  persistStore?: boolean;
 };
 
 // Two call shapes:
@@ -426,6 +463,10 @@ export function createEnvironment(
   // `window.crucible` is already populated). On web, this is the first
   // assignment.
   const resolved = options.platform ?? installWebRuntime();
-  const { relay, dispose } = createRelayEnvironment(options.fetch);
+  const { relay, dispose } = createRelayEnvironment(
+    options.fetch,
+    options.subscribe,
+    options.persistStore ?? true,
+  );
   return { relay, platform: resolved, dispose };
 }

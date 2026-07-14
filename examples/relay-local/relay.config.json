@@ -1,0 +1,12 @@
+{
+  "src": "./src",
+  "schema": "./schema.graphql",
+  "language": "typescript",
+  "eagerEsModules": true,
+  "useImportTypeSyntax": true,
+  "persistConfig": {
+    "file": "./persisted-queries.json",
+    "algorithm": "MD5",
+    "include_query_text": true
+  }
+}

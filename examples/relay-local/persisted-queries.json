@@ -1,0 +1,8 @@
+{
+  "4747bacbb3c22086f1d3638cbde7290c": "query page_TodosQuery {\n  todos(first: 50) {\n    edges {\n      node {\n        id\n        databaseId\n        title\n        completed\n        updatedAt\n      }\n    }\n  }\n}\n",
+  "4d5db0d51c685d3b8b32a4996c80e488": "mutation page_CreateTodoMutation(\n  $title: String!\n) {\n  createTodo(title: $title) {\n    id\n    databaseId\n    title\n    completed\n    updatedAt\n  }\n}\n",
+  "51ffb2d6e029394b7ee27753650c8254": "query page_TodosQuery {\n  todos(first: 20) {\n    edges {\n      node {\n        id\n        title\n        completed\n        updatedAt\n      }\n    }\n  }\n}\n",
+  "7963f843a7337841379d7d4ee3103acc": "subscription subscriptionProof_TodoEventsSubscription {\n  todoEvent {\n    eventId\n    kind\n    message\n    emittedAt\n    sourceTab\n    todo {\n      id\n      title\n    }\n  }\n}\n",
+  "9173ff2a1c8fdfe4f68a09669b816664": "mutation page_ToggleTodoMutation(\n  $databaseId: String!\n) {\n  toggleTodo(databaseId: $databaseId) {\n    id\n    databaseId\n    title\n    completed\n    updatedAt\n  }\n}\n",
+  "df49b9084428cbe1574c5e0c2f0e1021": "subscription page_TodosSubscription {\n  todoChanged {\n    id\n    databaseId\n    title\n    completed\n    updatedAt\n  }\n}\n"
+}

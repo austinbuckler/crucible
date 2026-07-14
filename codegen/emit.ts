@@ -60,6 +60,9 @@ export function emitAll(
 //   - `network` (#46) — threaded into `createEnvironment` so consumers
 //     can supply a custom fetch (Idempotency-Key wrapper, telemetry,
 //     etc.) without monkey-patching `globalThis.fetch`.
+//   - `localGraphQL` — converted into a fetch via
+//     `createLocalGraphQLFetch` so Relay can execute against a local
+//     Pothos/Drizzle/SQLite schema without knowing a sync engine exists.
 //   - `swUpdate` (#53) — threaded into `<AppShell>` so consumers can
 //     tune the SW update lifecycle (idle threshold, observability
 //     callbacks) per the `SwUpdateBehavior` shape from #29.
@@ -118,6 +121,7 @@ export function emitMainEntry(ctx: EmitContext): void {
         ? readConfigExports(configPath)
         : new Set<string>();
     const hasNetwork = exports.has("network");
+    const hasLocalGraphQL = exports.has("localGraphQL");
     const hasSwUpdate = exports.has("swUpdate");
 
     // Build the import line incrementally so we only name what the user
@@ -125,15 +129,26 @@ export function emitMainEntry(ctx: EmitContext): void {
     // if someone writes a config file that, say, only sets `swUpdate`.
     const importNames: string[] = [];
     if (hasNetwork) importNames.push("network as __cruxNetwork");
+    if (hasLocalGraphQL) importNames.push("localGraphQL as __cruxLocalGraphQL");
     if (hasSwUpdate) importNames.push("swUpdate as __cruxSwUpdate");
     const configImport =
         importNames.length > 0
             ? `import { ${importNames.join(", ")} } from "../src/app/crucible.config.ts";\n`
             : "";
 
-    const envCall = hasNetwork
-        ? `Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch })`
-        : `Crucible.createEnvironment()`;
+    const prepareLocalGraphQL = hasLocalGraphQL
+        ? `if (__cruxLocalGraphQL) await Crucible.prepareLocalGraphQL(__cruxLocalGraphQL);
+`
+        : "";
+    const envSetup = hasLocalGraphQL
+        ? hasNetwork
+            ? `const __cruxFetch = __cruxLocalGraphQL ? Crucible.createLocalGraphQLFetch(__cruxLocalGraphQL) : __cruxNetwork?.fetch;
+const __cruxSubscribe = __cruxLocalGraphQL ? Crucible.createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined;
+const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: __cruxLocalGraphQL ? false : true });`
+            : `const environment = Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? Crucible.createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? Crucible.createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: false });`
+        : hasNetwork
+          ? `const environment = Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch });`
+          : `const environment = Crucible.createEnvironment();`;
     const appShellOpen = hasSwUpdate
         ? `<Crucible.AppShell swUpdate={__cruxSwUpdate}>`
         : `<Crucible.AppShell>`;
@@ -144,7 +159,7 @@ import { createRoot } from "react-dom/client";
 import * as Crucible from "crucible";
 import { routes } from "./routes.ts";
 ${configImport}
-const environment = ${envCall};
+${prepareLocalGraphQL}${envSetup}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -164,7 +179,7 @@ createRoot(document.getElementById("root")!).render(
 // cheap; (b) we only care about three or four specific names —
 // detecting them via regex is reliable for the patterns this file is
 // expected to hold (`export const network = …`, `export const
-// swUpdate = …`, occasionally re-exports). If a user resorts to
+// localGraphQL = …`, `export const swUpdate = …`, occasionally re-exports). If a user resorts to
 // dynamic exports the codegen will simply not detect them and the
 // emitted main.tsx will lack the corresponding wiring; that's a
 // reasonable footgun cost for keeping codegen fast and synchronous.
@@ -183,7 +198,7 @@ function readConfigExports(configPath: string): Set<string> {
     //   export { X }              ← bare re-export of a local binding
     //   export { foo as X }       ← aliased re-export
     // Only the known config-shape names are checked.
-    const known = ["network", "swUpdate"] as const;
+    const known = ["network", "localGraphQL", "swUpdate"] as const;
     for (const name of known) {
         const directDecl = new RegExp(
             `\\bexport\\s+(?:const|let|var)\\s+${name}\\b`,

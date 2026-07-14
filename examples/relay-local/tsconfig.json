@@ -7,19 +7,18 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
-    "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "jsx": "react-jsx",
     "skipLibCheck": true,
-    "types": ["bun"],
+    "types": ["vite/client", "bun"],
     "paths": {
-      "crucible": ["./crucible.ts"],
-    },
+      "crucible": ["../../crucible.ts"],
+      "react-crucible": ["../../index.ts"],
+      "react-crucible/*": ["../../*"]
+    }
   },
-  "include": ["**/*.ts", "**/*.tsx", "**/*.d.ts"],
-  "exclude": ["node_modules", "__tests__", "examples"],
+  "include": ["../../crucible-env.d.ts", "src", "vite.config.ts", "drizzle.config.ts"],
+  "exclude": [".crucible", "node_modules"]
 }

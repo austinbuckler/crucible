@@ -1,0 +1,57 @@
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+interface Node {
+  id: ID!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type Query {
+  node(id: ID!): Node
+  todos(first: Int, after: String, last: Int, before: String): TodoConnection!
+}
+
+type Subscription {
+  todoEvent: TodoEvent!
+}
+
+type Mutation {
+  createTodo(title: String!): Todo!
+  toggleTodo(databaseId: String!): Todo!
+}
+
+type Todo implements Node {
+  id: ID!
+  databaseId: String!
+  title: String!
+  completed: Boolean!
+  updatedAt: String!
+}
+
+type TodoConnection {
+  edges: [TodoEdge!]!
+  pageInfo: PageInfo!
+}
+
+type TodoEvent {
+  eventId: String!
+  kind: String!
+  message: String!
+  emittedAt: String!
+  sourceTab: String!
+  todo: Todo!
+}
+
+type TodoEdge {
+  cursor: String!
+  node: Todo
+}

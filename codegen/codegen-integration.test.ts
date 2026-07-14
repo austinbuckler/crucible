@@ -252,6 +252,58 @@ describe("runCodegen — full pipeline", () => {
     rmSync(root, { recursive: true });
   });
 
+  test("main.tsx emission imports localGraphQL from crucible.config.ts and turns it into Relay fetch", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const localGraphQL: CrucibleConfig["localGraphQL"] = {} as never;
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { localGraphQL as __cruxLocalGraphQL } from "../src/app/crucible.config.ts"',
+    );
+    expect(main).toContain(
+      "if (__cruxLocalGraphQL) await Crucible.prepareLocalGraphQL(__cruxLocalGraphQL);",
+    );
+    expect(main).toContain(
+      "Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? Crucible.createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? Crucible.createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: false })",
+    );
+    expect(main).not.toContain("__cruxNetwork");
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx emission lets localGraphQL override network when both are exported", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const network: CrucibleConfig["network"] = { fetch: globalThis.fetch };
+        export const localGraphQL: CrucibleConfig["localGraphQL"] = {} as never;
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { network as __cruxNetwork, localGraphQL as __cruxLocalGraphQL } from "../src/app/crucible.config.ts"',
+    );
+    expect(main).toContain(
+      "if (__cruxLocalGraphQL) await Crucible.prepareLocalGraphQL(__cruxLocalGraphQL);",
+    );
+    expect(main).toContain(
+      "const __cruxFetch = __cruxLocalGraphQL ? Crucible.createLocalGraphQLFetch(__cruxLocalGraphQL) : __cruxNetwork?.fetch;",
+    );
+    expect(main).toContain(
+      "const __cruxSubscribe = __cruxLocalGraphQL ? Crucible.createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined;",
+    );
+    expect(main).toContain(
+      "const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: __cruxLocalGraphQL ? false : true });",
+    );
+    rmSync(root, { recursive: true });
+  });
+
   test("main.tsx emission imports swUpdate from crucible.config.ts and threads it onto <AppShell> (#53)", () => {
     const root = makeApp({
       "src/app/page.tsx": "export default function P(){return null}",
