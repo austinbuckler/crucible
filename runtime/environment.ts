@@ -236,8 +236,12 @@ export async function fetchWithRetry(
 // Exported for unit tests; not part of the package's public API.
 export const NODE_MISSING_FIELD_HANDLER: MissingFieldHandler = {
   kind: "linked",
-  handle(field, _record, args) {
-    if (field.name === "node" && typeof args.id === "string") {
+  handle(field, record, args, store) {
+    if (
+      field.name === "node" &&
+      typeof args.id === "string" &&
+      record?.getDataID() === store.getRoot().getDataID()
+    ) {
       return args.id;
     }
     return undefined;

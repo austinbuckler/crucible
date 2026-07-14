@@ -702,16 +702,29 @@ describe("NODE_MISSING_FIELD_HANDLER", () => {
   test("returns the id argument as DataID when the field is `node`", () => {
     expect(NODE_MISSING_FIELD_HANDLER.kind).toBe("linked");
     if (NODE_MISSING_FIELD_HANDLER.kind !== "linked") return;
+    const rootRecord = { getDataID: () => "client:root" };
     const result = NODE_MISSING_FIELD_HANDLER.handle(
       // The Relay normalization layer passes a NormalizationLinkedField;
       // only `name` is read here, so a minimal stub is fine.
       { name: "node" } as never,
-      null,
+      rootRecord as never,
       { id: "Order:abc123" },
-      // Store proxy unused by this handler; never narrowing acceptable.
-      null as never,
+      { getRoot: () => rootRecord } as never,
     );
     expect(result).toBe("Order:abc123");
+  });
+
+  test("returns undefined for nested node fields", () => {
+    if (NODE_MISSING_FIELD_HANDLER.kind !== "linked") return;
+    const rootRecord = { getDataID: () => "client:root" };
+    expect(
+      NODE_MISSING_FIELD_HANDLER.handle(
+        { name: "node" } as never,
+        { getDataID: () => "Viewer:me" } as never,
+        { id: "Order:abc" },
+        { getRoot: () => rootRecord } as never,
+      ),
+    ).toBeUndefined();
   });
 
   test("returns undefined for other field names — fall through", () => {
@@ -719,9 +732,9 @@ describe("NODE_MISSING_FIELD_HANDLER", () => {
     expect(
       NODE_MISSING_FIELD_HANDLER.handle(
         { name: "viewer" } as never,
-        null,
+        { getDataID: () => "client:root" } as never,
         { id: "Order:abc" },
-        null as never,
+        { getRoot: () => ({ getDataID: () => "client:root" }) } as never,
       ),
     ).toBeUndefined();
   });
@@ -731,17 +744,17 @@ describe("NODE_MISSING_FIELD_HANDLER", () => {
     expect(
       NODE_MISSING_FIELD_HANDLER.handle(
         { name: "node" } as never,
-        null,
+        { getDataID: () => "client:root" } as never,
         {},
-        null as never,
+        { getRoot: () => ({ getDataID: () => "client:root" }) } as never,
       ),
     ).toBeUndefined();
     expect(
       NODE_MISSING_FIELD_HANDLER.handle(
         { name: "node" } as never,
-        null,
+        { getDataID: () => "client:root" } as never,
         { id: 42 },
-        null as never,
+        { getRoot: () => ({ getDataID: () => "client:root" }) } as never,
       ),
     ).toBeUndefined();
   });

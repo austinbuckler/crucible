@@ -278,9 +278,42 @@ function stripCommentsAndStrings(source: string): string {
             continue;
         }
 
+        if (ch === "/" && isRegexLiteralStart(out)) {
+            out += " ";
+            let inClass = false;
+            while (++i < source.length) {
+                const current = source[i];
+                out += current === "\n" ? "\n" : " ";
+                if (current === "\\") {
+                    if (i + 1 < source.length) {
+                        i++;
+                        out += source[i] === "\n" ? "\n" : " ";
+                    }
+                    continue;
+                }
+                if (current === "[") inClass = true;
+                if (current === "]") inClass = false;
+                if (current === "/" && !inClass) {
+                    while (/[a-z]/i.test(source[i + 1] ?? "")) {
+                        i++;
+                        out += " ";
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+
         out += ch;
     }
     return out;
+}
+
+function isRegexLiteralStart(strippedPrefix: string): boolean {
+    const trimmed = strippedPrefix.trimEnd();
+    if (trimmed.length === 0) return true;
+    const prev = trimmed[trimmed.length - 1];
+    return prev != null && "([{=,:;!&|?+-*~^<>".includes(prev);
 }
 
 function emitEntrypoint(ctx: EmitContext, rwp: RouteWithPage): void {

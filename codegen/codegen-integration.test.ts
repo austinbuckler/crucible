@@ -384,6 +384,7 @@ describe("runCodegen — full pipeline", () => {
       "src/app/crucible.config.ts": `
         // export const network = { fetch: globalThis.fetch };
         const text = "export const localGraphQL = {}";
+        const pattern = /export const swUpdate/;
         const network = { fetch: globalThis.fetch };
         export { network as notNetwork };
       `,
