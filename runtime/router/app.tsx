@@ -416,6 +416,8 @@ export function App({
     [onError],
   );
 
+  const isBootstrapping = state.resolution === EMPTY_RESOLUTION;
+
   return (
     <PlatformProvider value={environment.platform}>
       <RelayEnvironmentProvider environment={environment.relay}>
@@ -425,13 +427,17 @@ export function App({
             onError={handleError}
           >
             <NotFoundBoundary fallback={<DefaultNotFound />}>
-              <Suspense fallback={<DefaultLoading />}>
-                <RouteOutlet
-                  resolution={state.resolution}
-                  rawSearch={state.location.search}
-                  onError={handleError}
-                />
-              </Suspense>
+              {isBootstrapping ? (
+                <DefaultLoading />
+              ) : (
+                <Suspense fallback={<DefaultLoading />}>
+                  <RouteOutlet
+                    resolution={state.resolution}
+                    rawSearch={state.location.search}
+                    onError={handleError}
+                  />
+                </Suspense>
+              )}
               {/* Mount once at App-level so imperative `openAppWindow(<X/>)`
                   portals join the same React tree (Relay env, platform,
                   navigation, all flow through). */}
