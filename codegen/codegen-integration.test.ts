@@ -413,4 +413,18 @@ describe("runCodegen — full pipeline", () => {
     );
     rmSync(root, { recursive: true });
   });
+
+  test("main.tsx config export detection accepts multi-declarator exports", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const network: CrucibleConfig["network"] = {}, localGraphQL: CrucibleConfig["localGraphQL"] = {} as never;
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain("network as __cruxNetwork, localGraphQL as __cruxLocalGraphQL");
+    rmSync(root, { recursive: true });
+  });
 });

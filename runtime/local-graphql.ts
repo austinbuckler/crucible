@@ -400,15 +400,22 @@ export function createLocalGraphQLSubscribe<TContext = unknown>(
         } catch (err) {
           if (!active) return;
           sink.error(err instanceof Error ? err : new Error(String(err)));
+        } finally {
+          init.signal?.removeEventListener("abort", onAbort);
+          if (iterator) {
+            try {
+              await iterator.return?.();
+            } catch {
+              // Ignore cleanup errors after the sink has completed/errored.
+            }
+          }
         }
       })();
 
       return () => {
         active = false;
         controller.abort();
-        init.signal?.removeEventListener("abort", onAbort);
         resolveAbort?.();
-        void iterator?.return?.();
       };
     });
 }

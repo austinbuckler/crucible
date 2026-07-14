@@ -205,14 +205,20 @@ function readConfigExports(configPath: string): Set<string> {
     // Only the known config-shape names are checked.
     const known = ["network", "localGraphQL", "swUpdate"] as const;
     for (const name of known) {
-        const directDecl = new RegExp(
-            `\\bexport\\s+(?:const|let|var)\\s+${name}\\b`,
-        );
-        if (directDecl.test(source) || hasNamedExport(source, name)) {
+        if (hasDirectExportDeclaration(source, name) || hasNamedExport(source, name)) {
             found.add(name);
         }
     }
     return found;
+}
+
+function hasDirectExportDeclaration(source: string, name: string): boolean {
+    const directDecl = /\bexport\s+(?:const|let|var)\s+([^;]+)/g;
+    for (const match of source.matchAll(directDecl)) {
+        const declaration = match[1] ?? "";
+        if (new RegExp(`(?:^|,)\\s*${name}\\b`).test(declaration)) return true;
+    }
+    return false;
 }
 
 function hasNamedExport(source: string, name: string): boolean {
