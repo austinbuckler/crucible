@@ -4,11 +4,11 @@ import type { OperationType } from "relay-runtime";
 import type { Environment } from "../environment.ts";
 import { isRouterTarget } from "../url-safety.ts";
 import type { Buckets } from "./buckets.ts";
-import type { MatchFn } from "./match.ts";
+import { matchDefault, type MatchFn } from "./match.ts";
+import type { Match } from "./types.ts";
 import {
   PREFETCH_TTL_MS,
   shouldSkipPrefetch,
-  warmSubEntrypoint,
   type PrefetchEntry,
 } from "./prefetch.ts";
 
@@ -44,36 +44,30 @@ export function usePrefetchCache(
       const url = new URL(to, window.location.href);
       const key = url.pathname + url.search;
       if (cache.has(key)) return; // already warm
-      const matched = match(buckets.mainRoutes, url.pathname);
-      if (!matched) return;
+      const matches = collectPrefetchMatches(buckets, url.pathname, match);
+      if (matches.length === 0) return;
 
-      // Code chunks first — cheap, no network for already-cached modules.
-      void matched.route.entrypoint.root.load();
-      for (const frame of matched.route.frames) {
-        if (frame.layout) void frame.layout.load();
-      }
-
-      const preload = {
-        params: matched.params,
-        search: new URLSearchParams(url.search),
-      };
-      const { queries } = matched.route.entrypoint.getPreloadProps(preload);
       const refs: PreloadedQuery<never>[] = [];
-      for (const query of Object.values(queries)) {
-        refs.push(
-          loadQuery<OperationType>(env, query.parameters, query.variables, {
-            fetchPolicy: "store-and-network",
-          }) as PreloadedQuery<never>,
-        );
-      }
-      // Recurse into the page's sub-entrypoints so heavy sidebars/feeds
-      // don't suspend cold on click. Mirrors `loadEntrypoint` in load.ts.
-      if (matched.route.entrypoint.entryPoints) {
-        for (const sub of Object.values(matched.route.entrypoint.entryPoints)) {
-          warmSubEntrypoint(env, sub, preload, refs);
+      for (const matched of matches) {
+        // Code chunks first — cheap, no network for already-cached modules.
+        void matched.route.entrypoint.root.load();
+        for (const frame of matched.route.frames) {
+          if (frame.layout) void frame.layout.load();
+        }
+
+        const preload = {
+          params: matched.params,
+          search: new URLSearchParams(url.search),
+        };
+        const { queries } = matched.route.entrypoint.getPreloadProps(preload);
+        for (const query of Object.values(queries)) {
+          refs.push(
+            loadQuery<OperationType>(env, query.parameters, query.variables, {
+              fetchPolicy: "store-and-network",
+            }) as PreloadedQuery<never>,
+          );
         }
       }
-
       const timer = setTimeout(() => {
         cache.delete(key);
         for (const r of refs) r.dispose();
@@ -85,6 +79,35 @@ export function usePrefetchCache(
         },
       });
     },
-    [buckets.mainRoutes, env, match],
+    [buckets, env, match],
   );
+}
+
+export function collectPrefetchMatches(
+  buckets: Buckets,
+  pathname: string,
+  match: MatchFn,
+): ReadonlyArray<Match> {
+  const out: Match[] = [];
+  const seen = new Set<object>();
+  const add = (m: Match | null) => {
+    if (!m || seen.has(m.route)) return;
+    seen.add(m.route);
+    out.push(m);
+  };
+
+  const main = match(buckets.mainRoutes, pathname);
+  add(main ?? matchDefault(buckets.mainDefaults, pathname));
+
+  for (const slotName of buckets.allSlots) {
+    const intercept = match(buckets.slotIntercepts.get(slotName) ?? [], pathname);
+    const regular = match(buckets.slotRegulars.get(slotName) ?? [], pathname);
+    add(intercept);
+    add(regular);
+    if (!intercept && !regular) {
+      add(matchDefault(buckets.slotDefaults.get(slotName) ?? [], pathname));
+    }
+  }
+
+  return out;
 }

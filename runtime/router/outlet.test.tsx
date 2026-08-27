@@ -88,7 +88,7 @@ function makeMatch(route: RouteRecord): Match {
 }
 
 function makeLoaded(match: Match): LoadedEntrypoint {
-  return { route: match.route, preloaded: {}, entryPoints: {} };
+  return { route: match.route, preloaded: {} };
 }
 
 // Mirrors how App.tsx mounts the outlet — the App-level Suspense is what

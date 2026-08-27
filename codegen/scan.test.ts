@@ -76,6 +76,15 @@ describe("scanRoutes basic discovery", () => {
     rmSync(root, { recursive: true });
   });
 
+  test("throws when path-transparent groups create duplicate route ids", () => {
+    const root = makeFixture({
+      "(marketing)/about/page.tsx": STUB_PAGE,
+      "(app)/about/page.tsx": STUB_PAGE,
+    });
+    expect(() => scanRoutes(root)).toThrow(/Duplicate route id "about"/);
+    rmSync(root, { recursive: true });
+  });
+
   test("_private directories are skipped", () => {
     const root = makeFixture({
       "page.tsx": STUB_PAGE,

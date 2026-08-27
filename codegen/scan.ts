@@ -232,6 +232,16 @@ export function scanRoutes(appDir: string): ReadonlyArray<DiscoveredRoute> {
   }
 
   walk(appDir, [], [], undefined, undefined);
+  const seenIds = new Map<string, string>();
+  for (const route of routes) {
+    const previous = seenIds.get(route.id);
+    if (previous) {
+      throw new Error(
+        `[crucible] Duplicate route id "${route.id}" for ${previous} and ${route.pageFile}. Route groups are path-transparent; add a real path segment or remove the duplicate route.`,
+      );
+    }
+    seenIds.set(route.id, route.pageFile);
+  }
   return routes;
 }
 

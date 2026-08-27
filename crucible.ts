@@ -1,20 +1,10 @@
-// Omakase page contract — `Crucible.Route(...)` returns a typed Route
-// object whose `.page(fn)` becomes the page's default export and whose
-// `.Entrypoint.<Name>` namespace exposes the file's sub-entrypoints.
-// `Crucible.Entrypoint(component)` marks a sibling file as an
-// entrypoint (no-op at runtime; the codegen reads the call site).
-export { Route, Entrypoint } from "./runtime/route.ts";
 export type {
-  RouteConfig,
-  RouteObject,
-  RoutePageProps,
   SearchSpec,
   InferSearch,
   InferParams,
 } from "./runtime/route.ts";
 
 export { App } from "./runtime/router/app.tsx";
-export { EntryPointContainer } from "./runtime/router/page-renderer.tsx";
 export {
   useNavigate,
   useLocation,
@@ -22,10 +12,10 @@ export {
   useSearchParams,
   useDeferredSearchParams,
   usePrefetch,
+  useRefresh,
   useIsNavigating,
   useSelectedLayoutSegment,
 } from "./runtime/router/context.ts";
-export type { LoadedSubEntrypoint } from "./runtime/router/types.ts";
 export { Link } from "./runtime/link.tsx";
 export {
   Window,
@@ -43,6 +33,22 @@ export {
 } from "./runtime/platform.ts";
 export { useAsyncDispatch } from "./runtime/use-async-dispatch.ts";
 export { dismissSplashScreen } from "./runtime/splash.ts";
+export {
+  configureSyncStatus,
+  getStorageSnapshot,
+  getSyncSnapshot,
+  refreshStorageSnapshot,
+  requestStoragePersistence,
+  usePersistenceRequest,
+  useStorageRefresh,
+  useSyncFlush,
+  useSyncRefresh,
+  useSyncRetry,
+  type AppStorageSnapshot,
+  type AppSyncSnapshot,
+  type AppSyncStatus,
+  type SyncStatusSource,
+} from "./runtime/app-graph.ts";
 export type {
   PlatformRuntime,
   CrucibleRuntime,
@@ -55,6 +61,7 @@ export {
   type CreateEnvironmentOptions,
   type Environment,
   type FetchLike,
+  type SubscribeLike,
 } from "./runtime/environment.ts";
 
 /**
@@ -63,7 +70,11 @@ export {
  * matching framework primitive at boot:
  *
  *   - `network` → `createEnvironment({ fetch: network.fetch })` (#46)
+ *   - `localGraphQL` → `await prepareLocalGraphQL(localGraphQL)` then
+ *     `createEnvironment({ fetch, subscribe })` with helpers imported from
+ *     `react-crucible/runtime/local-graphql.ts`
  *   - `swUpdate` → `<AppShell swUpdate={swUpdate}>` (#53)
+ *   - `persistence` → app persistence options.
  *
  * Each export is independently optional. Apps that ship no config
  * file get the original zero-config bundle. Apps that export only
@@ -105,7 +116,28 @@ export type CrucibleConfig = {
    */
   network?: {
     fetch?: import("./runtime/environment.ts").FetchLike;
+    subscribe?: import("./runtime/environment.ts").SubscribeLike;
   };
+  /**
+   * App persistence options. Today this configures Relay RecordSource
+   * persistence; future view/app-graph persistence should live under the same
+   * app-level namespace. `scope` is appended to persisted keys so
+   * authenticated apps can avoid hydrating user A's state into user B's
+   * environment on shared devices.
+   */
+  persistence?: {
+    persistStore?: boolean;
+    scope?: string | null;
+  };
+  /**
+   * Optional local GraphQL executor. When exported from
+   * `src/app/crucible.config.ts`, codegen wraps it with
+   * `prepareLocalGraphQL` before React mounts, then wraps it with
+   * `createLocalGraphQLFetch` and passes the resulting fetch to Relay.
+   * Relay still sends normal GraphQL POSTs; the supplied schema can be a
+   * Pothos schema backed by Drizzle + client-side SQLite/OPFS.
+   */
+  localGraphQL?: import("./runtime/local-graphql.ts").LocalGraphQLOptions;
   /**
    * Configuration for the service-worker update lifecycle managed by
    * `<AppShell>` (see #29). Tunes idle auto-activate timing and wires
@@ -144,4 +176,3 @@ export { useDocumentTitle, useMetadata } from "./runtime/metadata.tsx";
 // the codegen dynamic-imports at build time (splash.tsx, manifest.ts) use
 // these globals so the file has no `from "crucible"` imports — Bun's
 // resolver doesn't follow Vite aliases at codegen time.
-

@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "types": ["vite/client", "bun"],
+    "paths": {
+      "crucible": ["../../crucible.ts"],
+      "react-crucible": ["../../index.ts"],
+      "react-crucible/*": ["../../*"]
+    }
+  },
+  "include": ["../../crucible-env.d.ts", "src", "vite.config.ts", "drizzle.config.ts"],
+  "exclude": [".crucible", "node_modules"]
+}

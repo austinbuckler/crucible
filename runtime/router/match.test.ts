@@ -94,6 +94,25 @@ describe("matchRoute — params and catchall", () => {
     });
   });
 
+  test("catchall decodes percent-encoded segments", () => {
+    const r = makeRoute("/docs/[...path]", [
+      { kind: "literal", value: "docs" },
+      { kind: "catchall", name: "path" },
+    ]);
+    expect(matchRoute([r], "/docs/a%20b/c%2Fd")?.params).toEqual({
+      path: "a b/c/d",
+    });
+  });
+
+  test("malformed catchall percent-encoding fails the match instead of throwing", () => {
+    const r = makeRoute("/docs/[...path]", [
+      { kind: "literal", value: "docs" },
+      { kind: "catchall", name: "path" },
+    ]);
+    expect(() => matchRoute([r], "/docs/%E0%A4")).not.toThrow();
+    expect(matchRoute([r], "/docs/%E0%A4")).toBe(null);
+  });
+
   test("catchall matches empty tail", () => {
     const r = makeRoute("/docs/[...path]", [
       { kind: "literal", value: "docs" },
@@ -133,6 +152,16 @@ describe("matchDefault — prefix match", () => {
     ], { kind: "default" });
     expect(matchDefault([r], "/orgs/abc/teams/x")?.params).toEqual({
       id: "abc",
+    });
+  });
+
+  test("catchall default decodes the remaining URL", () => {
+    const r = makeRoute("/docs/[...path]", [
+      { kind: "literal", value: "docs" },
+      { kind: "catchall", name: "path" },
+    ], { kind: "default" });
+    expect(matchDefault([r], "/docs/a%20b/c")?.params).toEqual({
+      path: "a b/c",
     });
   });
 

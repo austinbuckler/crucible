@@ -6,6 +6,8 @@ import {
   Store,
   type GraphQLResponse,
   type MissingFieldHandler,
+  type RelayFieldLogger,
+  type SubscribeFunction,
 } from "relay-runtime";
 import type { PlatformRuntime } from "./platform.ts";
 import { installWebRuntime } from "./platforms/web.ts";
@@ -34,8 +36,17 @@ const GRAPHQL_ENDPOINT = `${API_BASE_URL}/api/graphql`;
 // the env var isn't defined (e.g. running tests outside Vite).
 const SCHEMA_HASH = import.meta.env.CRUCIBLE_SCHEMA_HASH ?? "noschema";
 const STORAGE_PREFIX = "crucible.relay-cache.";
-const STORAGE_KEY = `${STORAGE_PREFIX}${SCHEMA_HASH}`;
+const SCHEMA_STORAGE_KEY = `${STORAGE_PREFIX}${SCHEMA_HASH}`;
 const PERSIST_DEBOUNCE_MS = 500;
+const RELAY_RESOLVER_RECORD_TYPENAME = "__RELAY_RESOLVER__";
+
+type PersistedRecord = Record<string, unknown>;
+type PersistedRecordMap = Record<string, PersistedRecord | null | undefined>;
+
+function storageKeyForScope(scope?: string | null): string {
+  if (!scope) return SCHEMA_STORAGE_KEY;
+  return `${SCHEMA_STORAGE_KEY}.${encodeURIComponent(scope)}`;
+}
 
 // Sweep any cache keys belonging to a prior schema. Runs once at module
 // load — no per-request cost. Idempotent because we only remove keys with
@@ -47,7 +58,9 @@ function sweepStaleCacheKeys(): void {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (!k) continue;
-      if (k.startsWith(STORAGE_PREFIX) && k !== STORAGE_KEY) stale.push(k);
+      const isCurrentSchema =
+        k === SCHEMA_STORAGE_KEY || k.startsWith(`${SCHEMA_STORAGE_KEY}.`);
+      if (k.startsWith(STORAGE_PREFIX) && !isCurrentSchema) stale.push(k);
     }
     for (const k of stale) localStorage.removeItem(k);
   } catch {
@@ -56,17 +69,42 @@ function sweepStaleCacheKeys(): void {
 }
 sweepStaleCacheKeys();
 
-function hydrateRecordSource(): RecordSource {
+function hydrateRecordSource(storageKey: string): RecordSource {
   if (typeof localStorage === "undefined") return new RecordSource();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (!raw) return new RecordSource();
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return new RecordSource();
-    return new RecordSource(parsed);
+    return new RecordSource(filterPersistedResolverRecords(parsed));
   } catch {
     return new RecordSource();
   }
+}
+
+function filterPersistedResolverRecords(
+  records: unknown,
+): PersistedRecordMap | undefined {
+  if (!records || typeof records !== "object") return undefined;
+  const next: PersistedRecordMap = {};
+  for (const [id, record] of Object.entries(records)) {
+    if (record != null && typeof record !== "object") continue;
+    if (isRelayResolverRecord(record)) continue;
+    next[id] = record as PersistedRecord | null | undefined;
+  }
+  return next;
+}
+
+function isRelayResolverRecord(record: unknown): boolean {
+  return !!record &&
+    typeof record === "object" &&
+    (record as { __typename?: unknown }).__typename === RELAY_RESOLVER_RECORD_TYPENAME;
+}
+
+export function serializeRecordSourceForPersistence(
+  source: RecordSource,
+): PersistedRecordMap | undefined {
+  return filterPersistedResolverRecords(source.toJSON());
 }
 
 type Persister = {
@@ -75,7 +113,11 @@ type Persister = {
 };
 
 // Exported for unit tests; not part of the package's public API.
-export function makePersister(source: RecordSource): Persister {
+export function makePersister(
+  source: RecordSource,
+  scope?: string | null,
+): Persister {
+  const storageKey = storageKeyForScope(scope);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
   return {
@@ -86,10 +128,13 @@ export function makePersister(source: RecordSource): Persister {
         if (disposed) return;
         if (typeof localStorage === "undefined") return;
         try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(source.toJSON()));
+          localStorage.setItem(
+            storageKey,
+            JSON.stringify(serializeRecordSourceForPersistence(source)),
+          );
         } catch {
           try {
-            localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(storageKey);
           } catch {
             // private mode / quota issues — give up
           }
@@ -123,6 +168,11 @@ export type FetchLike = (
   input: string,
   init: RequestInit,
 ) => Promise<Response>;
+
+export type SubscribeLike = (
+  input: string,
+  init: RequestInit,
+) => RelayObservable<GraphQLResponse>;
 
 // `DOMException` with name "AbortError" — the spec-compliant rejection for
 // an aborted fetch. Mirroring the platform here means downstream callers
@@ -230,22 +280,43 @@ export async function fetchWithRetry(
 // Exported for unit tests; not part of the package's public API.
 export const NODE_MISSING_FIELD_HANDLER: MissingFieldHandler = {
   kind: "linked",
-  handle(field, _record, args) {
-    if (field.name === "node" && typeof args.id === "string") {
+  handle(field, record, args, store) {
+    if (
+      field.name === "node" &&
+      typeof args.id === "string" &&
+      record?.getDataID() === store.getRoot().getDataID()
+    ) {
       return args.id;
     }
     return undefined;
   },
 };
 
+const RELAY_FIELD_LOGGER: RelayFieldLogger = (event) => {
+  if (event.kind !== "relay_resolver.error") return;
+  console.warn(
+    `[crucible] Relay resolver error in ${event.owner}.${event.fieldPath}`,
+    event.error,
+  );
+};
+
 function createRelayEnvironment(
   userFetch: FetchLike | undefined,
+  userSubscribe: SubscribeLike | undefined,
+  persistStore = true,
+  storeScope?: string | null,
 ): { relay: RelayEnvironment; dispose: () => void } {
-  const source = hydrateRecordSource();
+  const storageKey = storageKeyForScope(storeScope);
+  const source = persistStore ? hydrateRecordSource(storageKey) : new RecordSource();
   const store = new Store(source);
-  const persister = makePersister(source);
+  const persister = persistStore
+    ? makePersister(source, storeScope)
+    : { schedule: () => {}, dispose: () => {} } satisfies Persister;
 
-  const network = Network.create((operation, variables) => {
+  const buildGraphQLBody = (
+    operation: { name: string; text?: string | null; id?: string | null },
+    variables: Record<string, unknown> | null | undefined,
+  ) => {
     // Resolve the operation's full text. relay-compiler emits one of:
     //   - `operation.text` (eagerEsModules + non-persisted dev)
     //   - `operation.id` only, with the text in `persisted-queries.json`
@@ -263,11 +334,15 @@ function createRelayEnvironment(
         )}). Re-run \`bun run codegen\`.`,
       );
     }
-    const body = {
+    return {
       operationName: operation.name,
       query: text,
       variables: variables ?? {},
     };
+  };
+
+  const network = Network.create((operation, variables) => {
+    const body = buildGraphQLBody(operation, variables as Record<string, unknown> | null | undefined);
 
     // Return a RelayObservable so Relay's `unsubscribe` (fired when a
     // navigation supersedes a request, or when a component using
@@ -341,13 +416,37 @@ function createRelayEnvironment(
         controller.abort();
       };
     });
-  });
+  }, userSubscribe
+    ? ((operation, variables) => {
+        const body = buildGraphQLBody(
+          operation,
+          variables as Record<string, unknown> | null | undefined,
+        );
+        return RelayObservable.create<GraphQLResponse>((sink) => {
+          const subscription = userSubscribe(GRAPHQL_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify(body),
+          }).subscribe({
+            next: (payload) => {
+              queueMicrotask(persister.schedule);
+              sink.next(payload);
+            },
+            error: (error: Error) => sink.error(error),
+            complete: () => sink.complete(),
+          });
+          return () => subscription.unsubscribe();
+        });
+      }) satisfies SubscribeFunction
+    : undefined);
 
   return {
     relay: new RelayEnvironment({
       network,
       store,
       missingFieldHandlers: [NODE_MISSING_FIELD_HANDLER],
+      relayFieldLogger: RELAY_FIELD_LOGGER,
     }),
     dispose: persister.dispose,
   };
@@ -396,13 +495,26 @@ export type CreateEnvironmentOptions = {
    *   createEnvironment({ fetch: idempotencyFetch });
    */
   fetch?: FetchLike;
+  subscribe?: SubscribeLike;
+  /**
+   * Persist Relay's normalized RecordSource to localStorage. Defaults to true
+   * for remote GraphQL apps. Local-first apps with a durable SQLite store
+   * should set this to false so SQLite is the only persistent cache.
+   */
+  persistStore?: boolean;
+  /**
+   * Optional cache scope appended to the Relay RecordSource localStorage key.
+   * Use a stable user/session identifier so one user's normalized records are
+   * never hydrated into another user's environment on shared devices.
+   */
+  storeScope?: string | null;
 };
 
 // Two call shapes:
 //   - `createEnvironment(platform?)` — legacy positional form, kept so
 //     the codegen-emitted main.tsx pre-#46 keeps working byte-for-byte.
-//   - `createEnvironment({ platform?, fetch? })` — options bag for the
-//     network seam and any future env-level config.
+//   - `createEnvironment({ platform?, fetch?, subscribe? })` — options bag for
+//     the network seam and any future env-level config.
 export function createEnvironment(platform?: PlatformRuntime): Environment;
 export function createEnvironment(options: CreateEnvironmentOptions): Environment;
 export function createEnvironment(
@@ -426,6 +538,11 @@ export function createEnvironment(
   // `window.crucible` is already populated). On web, this is the first
   // assignment.
   const resolved = options.platform ?? installWebRuntime();
-  const { relay, dispose } = createRelayEnvironment(options.fetch);
+  const { relay, dispose } = createRelayEnvironment(
+    options.fetch,
+    options.subscribe,
+    options.persistStore ?? true,
+    options.storeScope,
+  );
   return { relay, platform: resolved, dispose };
 }

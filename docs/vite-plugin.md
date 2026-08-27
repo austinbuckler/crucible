@@ -51,6 +51,10 @@ type CrucibleOptions = {
   appRoot?: string;
   pwa?: PWAConfig;
   crucibleSpecifier?: string;
+  connectSrcAllowlist?: ReadonlyArray<string>;
+  experimental?: {
+    reactViewTransitions?: boolean;
+  };
 };
 ```
 
@@ -59,6 +63,25 @@ type CrucibleOptions = {
 | `appRoot` | `process.cwd()` | The consuming app's root. Where `src/app/`, `persisted-queries.json`, and `.crucible/` live. |
 | `pwa` | `null` | Fallback PWA config used when `src/app/manifest.ts` doesn't exist. Prefer the file-based manifest. |
 | `crucibleSpecifier` | `"react-crucible"` | npm specifier for crucible itself, embedded into generated `import` statements. Override when published or aliased under a different name. |
+| `connectSrcAllowlist` | `[]` | Extra CSP `connect-src` origins for generated `index.html`. |
+| `experimental.reactViewTransitions` | `false` | Enables React canary `<ViewTransition>` wrapping for route content when the installed React runtime exports it. |
+
+### Experimental React View Transitions
+
+Crucible follows Next.js' explicit opt-in shape for React View Transitions:
+
+```ts
+crucible({
+  experimental: {
+    reactViewTransitions: true,
+  },
+})
+```
+
+When enabled, the router wraps route content in React's canary
+`<ViewTransition>` component if the installed React runtime exports it. Stable
+React runtimes fall back to regular `useTransition` + Suspense behavior.
+Crucible does not call `document.startViewTransition` directly.
 
 ## Hooks (in order)
 
@@ -88,6 +111,7 @@ Injects three build-time constants via Vite's `define` map. The runtime reads th
 | `CRUCIBLE_SW_URL` | `"/sw.js"` if PWA configured, else `null` | `<AppShell>` decides whether to register the service worker |
 | `CRUCIBLE_MANIFEST_URL` | `"/manifest.webmanifest"` if PWA configured, else `null` | `<DocumentHead>` decides whether to emit `<link rel="manifest">` |
 | `CRUCIBLE_SCHEMA_HASH` | FNV-1a of `schema.graphql` content | Relay environment uses it as the localStorage cache key, so a schema change orphans stale records |
+| `CRUCIBLE_REACT_VIEW_TRANSITIONS` | `true` when `experimental.reactViewTransitions` is enabled | Router decides whether to use React canary `<ViewTransition>` when available |
 
 ### `resolveId` + `load`: virtual modules
 
@@ -101,7 +125,7 @@ Reads `.crucible/_internal/manifest.json` (the snapshot codegen wrote) and resol
 
 ### `buildStart()`
 
-Fires `runCodegen({ appRoot })`. This means by the time Vite starts module resolution, `.crucible/` exists with `routes.ts`, `entrypoints/*.ts`, `main.tsx`, `index.html`, and `registry.d.ts`. Codegen is synchronous; the build doesn't proceed until it finishes.
+Fires `runCodegen({ appRoot })`. This means by the time Vite starts module resolution, `.crucible/` exists with `routes.ts`, `entrypoints/*.ts`, `main.tsx`, and `index.html`. Codegen is synchronous; the build doesn't proceed until it finishes.
 
 ### `transformIndexHtml()`
 
@@ -146,12 +170,12 @@ Also serves a no-op `/sw.js` so registering the SW in dev doesn't 404.
 Codegen output is in `.crucible/`. If routes aren't resolving as expected:
 
 1. `cat .crucible/routes.ts` — does the route exist?
-2. `cat .crucible/registry.d.ts` — does the type registry have it?
+2. `cat .crucible/routes.ts` — does the route manifest have it?
 3. `cat .crucible/entrypoints/<id>.ts` — does the entrypoint look right?
 
 If a query isn't being preloaded:
 
-1. Check the page exports a `Queries` type alias (not an interface, not inline).
+1. Check the page exports `query = graphql\`... @preloadable ...\``.
 2. Check the GraphQL operation has `@preloadable`.
 3. `bun run codegen:relay` — did relay-compiler emit the artifact?
 4. `bun run codegen:crucible` — did Crucible's emit pick it up?

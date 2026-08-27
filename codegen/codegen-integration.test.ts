@@ -25,10 +25,8 @@ describe("runCodegen — full pipeline", () => {
   test("emits routes manifest + entrypoint for a single page", () => {
     const root = makeApp({
       "src/app/page.tsx": `
-        import * as Crucible from "crucible";
         import { graphql } from "react-relay";
-        const _q = graphql\`query page_HomeQuery @preloadable { __typename }\`;
-        export const Route = Crucible.Route("/", {});
+        export const query = graphql\`query page_HomeQuery @preloadable { __typename }\`;
         export default function Page() { return null }
       `,
       // relay-compiler artifact stub so the entrypoint import resolves
@@ -63,14 +61,12 @@ describe("runCodegen — full pipeline", () => {
   test("emits param mapping for dynamic routes when names match", () => {
     const root = makeApp({
       "src/app/clients/[id]/page.tsx": `
-        import * as Crucible from "crucible";
         import { graphql } from "react-relay";
-        import type { ClientQuery } from "./__generated__/ClientQuery.graphql";
-        export const Route = Crucible.Route("/clients/[id]", {});
+        export const query = graphql\`
+          query ClientQuery($id: ID!) @preloadable { client(id: $id) { id } }
+        \`;
         export default function Page() {
-          return usePreloadedQuery(graphql\`
-            query ClientQuery($id: ID!) @preloadable { client(id: $id) { id } }
-          \`, queries.client)
+          return null;
         }
       `,
       "src/app/clients/[id]/__generated__/ClientQuery.graphql.ts":
@@ -93,11 +89,8 @@ describe("runCodegen — full pipeline", () => {
   test("emits _preload destructure when no variables consume params", () => {
     const root = makeApp({
       "src/app/page.tsx": `
-        import * as Crucible from "crucible";
         import { graphql } from "react-relay";
-        import type { page_HomeQuery } from "./__generated__/page_HomeQuery.graphql";
-        const _q = graphql\`query page_HomeQuery @preloadable { __typename }\`;
-        export const Route = Crucible.Route("/", {});
+        export const query = graphql\`query page_HomeQuery @preloadable { __typename }\`;
         export default function Page() { return null }
       `,
       "src/app/__generated__/page_HomeQuery.graphql.ts":
@@ -149,17 +142,13 @@ describe("runCodegen — full pipeline", () => {
     rmSync(root, { recursive: true });
   });
 
-  test("emits sub-entrypoint module + wires parent's Entrypoint field", () => {
+  test("rejects page-level entryPoints; use parallel route slots instead", () => {
     const root = makeApp({
       "src/app/dashboard/page.tsx": `
-        import * as Crucible from "crucible";
         import { graphql } from "react-relay";
         import Sidebar from "./sidebar";
-        import type { dashboard_PageQuery } from "./__generated__/dashboard_PageQuery.graphql";
-        const _q = graphql\`query dashboard_PageQuery @preloadable { __typename }\`;
-        export const Route = Crucible.Route("/dashboard", {
-          Entrypoint: { Sidebar },
-        });
+        export const query = graphql\`query dashboard_PageQuery @preloadable { __typename }\`;
+        export const entryPoints = { Sidebar };
         export default function Page() { return null }
       `,
       "src/app/dashboard/__generated__/dashboard_PageQuery.graphql.ts":
@@ -174,34 +163,7 @@ describe("runCodegen — full pipeline", () => {
         "const node: any = {}; export default node; export type dashboard_StatsQuery = { variables: {}; response: {} };",
     });
 
-    runCodegen({ appRoot: root });
-
-    const parentEntryFile = join(
-      root,
-      ".crucible",
-      "entrypoints",
-      "dashboard.ts",
-    );
-    const subEntryFile = join(
-      root,
-      ".crucible",
-      "entrypoints",
-      "dashboard.Sidebar.ts",
-    );
-
-    expect(existsSync(parentEntryFile)).toBe(true);
-    expect(existsSync(subEntryFile)).toBe(true);
-
-    const parent = readFileSync(parentEntryFile, "utf8");
-    expect(parent).toContain('import __ep_Sidebar from "./dashboard.Sidebar.ts"');
-    expect(parent).toMatch(/entryPoints:\s*\{\s*Sidebar:\s*__ep_Sidebar/);
-
-    const sub = readFileSync(subEntryFile, "utf8");
-    // Sub-entrypoint uses SubEntryPoint type (not EntryPoint) and SubModule
-    // shape (no params/search).
-    expect(sub).toContain("SubEntryPoint<Queries>");
-    expect(sub).toContain("dashboard_StatsQuery");
-    expect(sub).not.toContain("search:");
+    expect(() => runCodegen({ appRoot: root })).toThrow(/parallel route slots/);
 
     rmSync(root, { recursive: true });
   });
@@ -224,6 +186,7 @@ describe("runCodegen — full pipeline", () => {
     runCodegen({ appRoot: root });
     const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
     expect(main).not.toContain("crucible.config");
+    expect(main).toContain('import * as Crucible from "react-crucible/crucible"');
     expect(main).toContain("Crucible.createEnvironment()");
     rmSync(root, { recursive: true });
   });
@@ -242,13 +205,107 @@ describe("runCodegen — full pipeline", () => {
       'import { network as __cruxNetwork } from "../src/app/crucible.config.ts"',
     );
     expect(main).toContain(
-      "Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch })",
+      "Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe })",
     );
     // network-only config does NOT thread swUpdate onto AppShell — the
     // emission should fall back to the bare `<Crucible.AppShell>` open
     // tag so the existing #29 default behavior holds.
     expect(main).toContain("<Crucible.AppShell>");
     expect(main).not.toContain("__cruxSwUpdate");
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx emission imports localGraphQL from crucible.config.ts and turns it into Relay fetch", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const localGraphQL: CrucibleConfig["localGraphQL"] = {} as never;
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { localGraphQL as __cruxLocalGraphQL } from "../src/app/crucible.config.ts"',
+    );
+    expect(main).toContain(
+      'import { createLocalGraphQLFetch, createLocalGraphQLSubscribe, prepareLocalGraphQL } from "react-crucible/runtime/local-graphql.ts"',
+    );
+    expect(main).toContain(
+      "if (__cruxLocalGraphQL) await prepareLocalGraphQL(__cruxLocalGraphQL);",
+    );
+    expect(main).toContain(
+      "Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: (__cruxLocalGraphQL ? false : true), storeScope: undefined })",
+    );
+    expect(main).not.toContain("__cruxNetwork");
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx emission lets localGraphQL override network when both are exported", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const network: CrucibleConfig["network"] = { fetch: globalThis.fetch };
+        export const localGraphQL: CrucibleConfig["localGraphQL"] = {} as never;
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { network as __cruxNetwork, localGraphQL as __cruxLocalGraphQL } from "../src/app/crucible.config.ts"',
+    );
+    expect(main).toContain(
+      "if (__cruxLocalGraphQL) await prepareLocalGraphQL(__cruxLocalGraphQL);",
+    );
+    expect(main).toContain(
+      "const __cruxFetch = __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : __cruxNetwork?.fetch;",
+    );
+    expect(main).toContain(
+      "const __cruxSubscribe = __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : __cruxNetwork?.subscribe;",
+    );
+    expect(main).toContain(
+      "const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: (__cruxLocalGraphQL ? false : true), storeScope: undefined });",
+    );
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx emission threads persistence into createEnvironment", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const persistence: CrucibleConfig["persistence"] = { scope: "user-1" };
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { persistence as __cruxPersistence } from "../src/app/crucible.config.ts"',
+    );
+    expect(main).toContain(
+      "Crucible.createEnvironment({ persistStore: __cruxPersistence?.persistStore, storeScope: __cruxPersistence?.scope })",
+    );
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx emission threads network and persistence together", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const network: CrucibleConfig["network"] = { fetch: globalThis.fetch };
+        export const persistence: CrucibleConfig["persistence"] = { scope: "user-1" };
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { network as __cruxNetwork, persistence as __cruxPersistence } from "../src/app/crucible.config.ts"',
+    );
+    expect(main).toContain(
+      "Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe, persistStore: __cruxPersistence?.persistStore, storeScope: __cruxPersistence?.scope })",
+    );
     rmSync(root, { recursive: true });
   });
 
@@ -293,7 +350,7 @@ describe("runCodegen — full pipeline", () => {
       'import { network as __cruxNetwork, swUpdate as __cruxSwUpdate } from "../src/app/crucible.config.ts"',
     );
     expect(main).toContain(
-      "Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch })",
+      "Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe })",
     );
     expect(main).toContain(
       "<Crucible.AppShell swUpdate={__cruxSwUpdate}>",
@@ -319,6 +376,87 @@ describe("runCodegen — full pipeline", () => {
     expect(main).not.toContain("crucible.config");
     expect(main).toContain("Crucible.createEnvironment()");
     expect(main).toContain("<Crucible.AppShell>");
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx config export detection ignores comments, strings, and aliases away", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        // export const network = { fetch: globalThis.fetch };
+        const text = "export const localGraphQL = {}";
+        const pattern = /export const swUpdate/;
+        function matcher() { return /export const localGraphQL/; }
+        const network = { fetch: globalThis.fetch };
+        export { network as notNetwork };
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).not.toContain("crucible.config");
+    expect(main).toContain("Crucible.createEnvironment()");
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx config export detection accepts aliases into known names", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        const local = {} as CrucibleConfig["localGraphQL"];
+        export { local as localGraphQL };
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain(
+      'import { localGraphQL as __cruxLocalGraphQL } from "../src/app/crucible.config.ts"',
+    );
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx config export detection accepts multi-declarator exports", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        import type { CrucibleConfig } from "crucible";
+        export const network: CrucibleConfig["network"] =
+          { fetch: () => { return fetch("/api/graphql"); } },
+          localGraphQL: CrucibleConfig["localGraphQL"] = {} as never;
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain("network as __cruxNetwork, localGraphQL as __cruxLocalGraphQL");
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx config export detection ignores initializer object properties", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        export const network = { fetch: globalThis.fetch, localGraphQL: false };
+        const helper = 1, localGraphQL = false;
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain('import { network as __cruxNetwork }');
+    expect(main).not.toContain("__cruxLocalGraphQL");
+    rmSync(root, { recursive: true });
+  });
+
+  test("main.tsx config export detection handles semicolonless exports", () => {
+    const root = makeApp({
+      "src/app/page.tsx": "export default function P(){return null}",
+      "src/app/crucible.config.ts": `
+        export const network = {}
+        export const localGraphQL = {} as never
+      `,
+    });
+    runCodegen({ appRoot: root });
+    const main = readFileSync(join(root, ".crucible", "main.tsx"), "utf8");
+    expect(main).toContain("network as __cruxNetwork, localGraphQL as __cruxLocalGraphQL");
     rmSync(root, { recursive: true });
   });
 });

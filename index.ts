@@ -2,6 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { Plugin, ViteDevServer } from "vite";
 import { runCodegen } from "./codegen/run.ts";
+export {
+    isRelayGeneratedArtifact,
+    stripRelayResolverTypeAssertions,
+} from "./relay-artifacts.ts";
+import {
+    isRelayGeneratedArtifact,
+    stripRelayResolverTypeAssertions,
+} from "./relay-artifacts.ts";
 import {
     resolvePWA,
     writeManifestFile,
@@ -26,6 +34,165 @@ function computeSchemaHash(appRoot: string): string {
     return h.toString(16).padStart(8, "0");
 }
 
+export function isAppPageModule(id: string, appRoot: string): boolean {
+    const normalized = id.split(sep).join("/");
+    const appDir = join(appRoot, "src", "app").split(sep).join("/");
+    return normalized.startsWith(`${appDir}/`) &&
+        (normalized.endsWith("/page.tsx") || normalized.endsWith("/default.tsx"));
+}
+
+export function stripPageQueryExport(code: string): string {
+    const exportDecl = /(^[ \t]*)export\s+const\s+query\b/gm;
+    let out = "";
+    let cursor = 0;
+
+    for (const match of code.matchAll(exportDecl)) {
+        const start = match.index;
+        if (isInsideStringOrComment(code, start)) continue;
+        const statement = readConstStatement(code, start);
+        if (!statement || hasTopLevelComma(statement.declarator)) continue;
+        out += code.slice(cursor, start);
+        out += `${match[1] ?? ""}const query${statement.afterName}`;
+        cursor = statement.end;
+    }
+
+    return cursor === 0 ? code : out + code.slice(cursor);
+}
+
+function isInsideStringOrComment(code: string, offset: number): boolean {
+    let quote: '"' | "'" | "`" | null = null;
+    let escaped = false;
+    let lineComment = false;
+    let blockComment = false;
+
+    for (let i = 0; i < offset; i++) {
+        const ch = code[i];
+        const next = code[i + 1];
+        if (lineComment) {
+            if (ch === "\n") lineComment = false;
+            continue;
+        }
+        if (blockComment) {
+            if (ch === "*" && next === "/") {
+                blockComment = false;
+                i++;
+            }
+            continue;
+        }
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch === "\\") {
+                escaped = true;
+                continue;
+            }
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === "/" && next === "/") {
+            lineComment = true;
+            i++;
+            continue;
+        }
+        if (ch === "/" && next === "*") {
+            blockComment = true;
+            i++;
+            continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    }
+
+    return quote != null || lineComment || blockComment;
+}
+
+function readConstStatement(
+    code: string,
+    start: number,
+): { afterName: string; declarator: string; end: number } | null {
+    const nameStart = code.indexOf("query", start);
+    if (nameStart < 0) return null;
+    const afterNameStart = nameStart + "query".length;
+    const equals = code.indexOf("=", afterNameStart);
+    if (equals < 0) return null;
+
+    let depth = 0;
+    let quote: '"' | "'" | "`" | null = null;
+    let escaped = false;
+    for (let i = equals + 1; i < code.length; i++) {
+        const ch = code[i];
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch === "\\") {
+                escaped = true;
+                continue;
+            }
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") {
+            quote = ch;
+            continue;
+        }
+        if (ch === "(" || ch === "[" || ch === "{") depth++;
+        if (ch === ")" || ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+        if (depth === 0 && ch === ";") {
+            const afterName = code.slice(afterNameStart, i + 1);
+            return {
+                afterName,
+                declarator: code.slice(equals + 1, i),
+                end: i + 1,
+            };
+        }
+        if (depth === 0 && ch === "\n") {
+            const rest = code.slice(i + 1);
+            if (/^\s*(?:export|import|const|let|var|function|type|interface)\b/.test(rest)) {
+                const afterName = code.slice(afterNameStart, i);
+                return {
+                    afterName,
+                    declarator: code.slice(equals + 1, i),
+                    end: i,
+                };
+            }
+        }
+    }
+    const afterName = code.slice(afterNameStart);
+    return { afterName, declarator: code.slice(equals + 1), end: code.length };
+}
+
+function hasTopLevelComma(source: string): boolean {
+    let depth = 0;
+    let quote: '"' | "'" | "`" | null = null;
+    let escaped = false;
+    for (let i = 0; i < source.length; i++) {
+        const ch = source[i];
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch === "\\") {
+                escaped = true;
+                continue;
+            }
+            if (ch === quote) quote = null;
+            continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") {
+            quote = ch;
+            continue;
+        }
+        if (ch === "(" || ch === "[" || ch === "{") depth++;
+        if (ch === ")" || ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+        if (depth === 0 && ch === ",") return true;
+    }
+    return false;
+}
+
 export type CrucibleOptions = {
     appRoot?: string;
     // PWA configuration fallback. Prefer authoring `src/app/manifest.ts` at
@@ -43,6 +210,12 @@ export type CrucibleOptions = {
     // `'self' ws: wss:`. Pass full schemes — e.g.
     // `["https://api.example.com", "https://*.sentry.io"]`.
     connectSrcAllowlist?: ReadonlyArray<string>;
+    experimental?: {
+        // Enables React's canary `<ViewTransition>` integration for route
+        // swaps. Requires a React runtime that exports `ViewTransition`;
+        // stable React users safely fall back to regular Transition + Suspense.
+        reactViewTransitions?: boolean;
+    };
 };
 
 export type { PWAConfig, PWAIcon } from "./pwa.ts";
@@ -136,6 +309,8 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
             },
         },
         config() {
+            const manifestConfig = loadManifestConfig();
+            const resolvedPwa = manifestConfig ? resolvePWA(manifestConfig) : null;
             // Expose build-time URL constants the AppShell reads. Both are null
             // when PWA isn't configured, so AppShell skips registering a SW and
             // skips emitting a `<link rel="manifest">` that would 404.
@@ -147,13 +322,16 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
             return {
                 define: {
                     "import.meta.env.CRUCIBLE_SW_URL": JSON.stringify(
-                        pwa ? "/sw.js" : null,
+                        resolvedPwa ? "/sw.js" : null,
                     ),
                     "import.meta.env.CRUCIBLE_MANIFEST_URL": JSON.stringify(
-                        pwa ? "/manifest.webmanifest" : null,
+                        resolvedPwa ? "/manifest.webmanifest" : null,
                     ),
                     "import.meta.env.CRUCIBLE_SCHEMA_HASH": JSON.stringify(
                         computeSchemaHash(appRoot),
+                    ),
+                    "import.meta.env.CRUCIBLE_REACT_VIEW_TRANSITIONS": JSON.stringify(
+                        options.experimental?.reactViewTransitions === true,
                     ),
                 },
             };
@@ -183,33 +361,38 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
                 injectTo: "head" as const,
             }));
         },
-        transform: {
-            // Native Rolldown pre-filter — the JS handler only fires for
-            // .css files whose source contains `@import "tailwindcss"`. Without
-            // this, the handler was being called for every transformed module
-            // (~7k+ in a large app) just to bail out on the regex test, which
-            // tripped Rolldown's PLUGIN_TIMINGS warning.
-            filter: {
-                id: { include: /\.css$/ },
-                code: { include: /@import\s+["']tailwindcss["']/ },
-            },
-            // Inject `@source` into any CSS file that imports Tailwind. Vite's
-            // root is `.crucible/`, which shrinks Tailwind v4's
-            // auto-content-scan window — files under `src/` get missed without
-            // an explicit @source. Append it to the user's already-Tailwind-
-            // active CSS file so it lands in the right context (a sibling
-            // `sources.css` doesn't reliably work because Tailwind contexts
-            // are file-scoped).
-            handler(code, id) {
+        transform(code, id) {
+            let next = code;
+
+            if (id.endsWith(".css") && /@import\s+["']tailwindcss["']/.test(next)) {
                 const srcDir = join(appRoot, "src");
                 const fromCssFile = relative(dirname(id), srcDir)
                     .split(sep)
                     .join("/");
-                const injected =
-                    code +
+                next +=
                     `\n/* injected by crucible: ensure src/ is in Tailwind's content scope */\n@source "${fromCssFile}/**/*.{ts,tsx,js,jsx,html}";\n`;
-                return { code: injected, map: null };
-            },
+            }
+
+            if (isAppPageModule(id, appRoot)) {
+                // Keep the authoring contract (`export const query = graphql...`)
+                // for Crucible codegen, but don't expose `query` at runtime.
+                // Vite React Refresh treats non-component exports as refresh
+                // boundary hazards; the page component only needs the local
+                // binding for `usePreloadedQuery(query, data)`.
+                next = stripPageQueryExport(next);
+            }
+
+            if (isRelayGeneratedArtifact(id)) {
+                // Relay emits TS-only resolver implementation assertions like:
+                //   (fooResolverType satisfies (...) => ...);
+                // esbuild strips `import type`, but `satisfies` compiles to a
+                // runtime identifier read, causing `ReferenceError` in the
+                // browser. The assertions are compile-time only and safe to
+                // remove before Vite transpiles the artifact.
+                next = stripRelayResolverTypeAssertions(next);
+            }
+
+            return next === code ? null : { code: next, map: null };
         },
         generateBundle(_options, bundle) {
             if (!pwa) return;
@@ -240,6 +423,7 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
         configureServer(server: ViteDevServer) {
             const appDir = join(appRoot, "src", "app");
             const manifestPath = join(appRoot, "src", "app", "manifest.ts");
+            const configPath = join(appRoot, "src", "app", "crucible.config.ts");
             const persistedQueriesPath = join(
                 appRoot,
                 "persisted-queries.json",
@@ -290,6 +474,16 @@ export function crucible(options: CrucibleOptions = {}): Plugin {
                 }
                 if (!file.startsWith(appDir)) return;
                 if (!/\.(tsx|ts|graphql)$/.test(file)) return;
+                if (file === configPath) {
+                    regen("config-change");
+                    server.ws.send({ type: "full-reload" });
+                    return;
+                }
+                if (file.endsWith(`${sep}page.tsx`) || file.endsWith(`${sep}default.tsx`)) {
+                    regen("page-change");
+                    server.ws.send({ type: "full-reload" });
+                    return;
+                }
                 // Manifest file content changes still need a refresh.
                 if (file === manifestPath) {
                     const refreshed = loadManifestConfig();

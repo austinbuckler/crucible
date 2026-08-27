@@ -15,6 +15,7 @@ const {
   RETRY_STATUSES,
   createEnvironment,
   NODE_MISSING_FIELD_HANDLER,
+  serializeRecordSourceForPersistence,
 } = await import("./environment.ts");
 
 const STORAGE_PREFIX = "crucible.relay-cache.";
@@ -51,6 +52,22 @@ describe("makePersister", () => {
       localStorage.key(i),
     ).filter((k): k is string => !!k && k.startsWith(STORAGE_PREFIX));
     expect(afterWrite.length).toBe(1);
+
+    persister.dispose();
+  });
+
+  test("scope appends a user/session segment to the storage key", async () => {
+    const source = new RecordSource({ "client:root": { __id: "client:root" } });
+    const persister = makePersister(source, "user/123");
+
+    persister.schedule();
+    await new Promise((r) => setTimeout(r, 600));
+
+    const writes = Array.from({ length: localStorage.length }, (_, i) =>
+      localStorage.key(i),
+    ).filter((k): k is string => !!k && k.startsWith(STORAGE_PREFIX));
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.endsWith(".user%2F123")).toBe(true);
 
     persister.dispose();
   });
@@ -112,6 +129,21 @@ describe("makePersister", () => {
     persister.schedule();
     persister.dispose();
     expect(() => persister.dispose()).not.toThrow();
+  });
+
+  test("omits Relay resolver records from persisted snapshots", () => {
+    const source = new RecordSource({
+      "client:root": { __id: "client:root", __typename: "__Root" },
+      "client:resolver:app": {
+        __id: "client:resolver:app",
+        __typename: "__RELAY_RESOLVER__",
+        __resolverLiveStateValue: {},
+      },
+    });
+
+    expect(serializeRecordSourceForPersistence(source)).toEqual({
+      "client:root": { __id: "client:root", __typename: "__Root" },
+    });
   });
 });
 
@@ -702,16 +734,29 @@ describe("NODE_MISSING_FIELD_HANDLER", () => {
   test("returns the id argument as DataID when the field is `node`", () => {
     expect(NODE_MISSING_FIELD_HANDLER.kind).toBe("linked");
     if (NODE_MISSING_FIELD_HANDLER.kind !== "linked") return;
+    const rootRecord = { getDataID: () => "client:root" };
     const result = NODE_MISSING_FIELD_HANDLER.handle(
       // The Relay normalization layer passes a NormalizationLinkedField;
       // only `name` is read here, so a minimal stub is fine.
       { name: "node" } as never,
-      null,
+      rootRecord as never,
       { id: "Order:abc123" },
-      // Store proxy unused by this handler; never narrowing acceptable.
-      null as never,
+      { getRoot: () => rootRecord } as never,
     );
     expect(result).toBe("Order:abc123");
+  });
+
+  test("returns undefined for nested node fields", () => {
+    if (NODE_MISSING_FIELD_HANDLER.kind !== "linked") return;
+    const rootRecord = { getDataID: () => "client:root" };
+    expect(
+      NODE_MISSING_FIELD_HANDLER.handle(
+        { name: "node" } as never,
+        { getDataID: () => "Viewer:me" } as never,
+        { id: "Order:abc" },
+        { getRoot: () => rootRecord } as never,
+      ),
+    ).toBeUndefined();
   });
 
   test("returns undefined for other field names — fall through", () => {
@@ -719,9 +764,9 @@ describe("NODE_MISSING_FIELD_HANDLER", () => {
     expect(
       NODE_MISSING_FIELD_HANDLER.handle(
         { name: "viewer" } as never,
-        null,
+        { getDataID: () => "client:root" } as never,
         { id: "Order:abc" },
-        null as never,
+        { getRoot: () => ({ getDataID: () => "client:root" }) } as never,
       ),
     ).toBeUndefined();
   });
@@ -731,17 +776,17 @@ describe("NODE_MISSING_FIELD_HANDLER", () => {
     expect(
       NODE_MISSING_FIELD_HANDLER.handle(
         { name: "node" } as never,
-        null,
+        { getDataID: () => "client:root" } as never,
         {},
-        null as never,
+        { getRoot: () => ({ getDataID: () => "client:root" }) } as never,
       ),
     ).toBeUndefined();
     expect(
       NODE_MISSING_FIELD_HANDLER.handle(
         { name: "node" } as never,
-        null,
+        { getDataID: () => "client:root" } as never,
         { id: 42 },
-        null as never,
+        { getRoot: () => ({ getDataID: () => "client:root" }) } as never,
       ),
     ).toBeUndefined();
   });

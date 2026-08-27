@@ -1,12 +1,3 @@
-import { loadQuery, type PreloadedQuery } from "react-relay";
-import type { OperationType } from "relay-runtime";
-import type {
-  PreloadParams,
-  QueryParameter,
-  SubEntryPoint,
-} from "../entrypoint.ts";
-import type { Environment } from "../environment.ts";
-
 // Network Information API hook — narrow declaration, draft web standard.
 type NetworkInformation = {
   saveData?: boolean;
@@ -36,30 +27,3 @@ export type PrefetchEntry = {
 };
 
 export const PREFETCH_TTL_MS = 30_000;
-
-// Recursively warm a sub-entrypoint: kick off its queries (retained in
-// `refs` so the caller can dispose them on TTL or unmount) and start
-// loading its module chunk. Mirrors `loadSub` in load.ts but doesn't
-// return a `LoadedSubEntrypoint` — prefetching just needs the side
-// effects + retained refs.
-export function warmSubEntrypoint(
-  env: Environment["relay"],
-  ep: SubEntryPoint<Record<string, QueryParameter>>,
-  preload: PreloadParams,
-  refs: PreloadedQuery<never>[],
-): void {
-  const { queries } = ep.getPreloadProps(preload);
-  for (const query of Object.values(queries)) {
-    refs.push(
-      loadQuery<OperationType>(env, query.parameters, query.variables, {
-        fetchPolicy: "store-and-network",
-      }) as PreloadedQuery<never>,
-    );
-  }
-  void ep.root.load();
-  if (ep.entryPoints) {
-    for (const sub of Object.values(ep.entryPoints)) {
-      warmSubEntrypoint(env, sub, preload, refs);
-    }
-  }
-}

@@ -21,5 +21,5 @@
     },
   },
   "include": ["**/*.ts", "**/*.tsx", "**/*.d.ts"],
-  "exclude": ["node_modules", "__tests__"],
+  "exclude": ["node_modules", "__tests__", "examples"],
 }

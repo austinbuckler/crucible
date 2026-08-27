@@ -18,6 +18,10 @@ interface ImportMetaEnv {
     // Used as part of the Relay store's localStorage cache key so a schema
     // change orphans stale records.
     readonly CRUCIBLE_SCHEMA_HASH: string;
+    // Build-time flag from `crucible({ experimental: { reactViewTransitions } })`.
+    // When true, the router wraps route content in React canary's
+    // `<ViewTransition>` if the installed React runtime exports it.
+    readonly CRUCIBLE_REACT_VIEW_TRANSITIONS: boolean;
     // Build-time API base URL. Empty string for web builds (relative
     // `/api/*` resolves same-origin); set by `vite.config.ts`'s `define`
     // for desktop builds so the SPA loaded from `app://app` reaches the

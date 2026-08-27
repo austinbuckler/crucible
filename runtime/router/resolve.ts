@@ -4,7 +4,7 @@ import {
   disposeLoadedEntrypoint,
   loadEntrypoint,
 } from "./load.ts";
-import { matchDefault, matchRoute } from "./match.ts";
+import { matchDefault, matchRoute, type MatchFn } from "./match.ts";
 import type {
   LoadedEntrypoint,
   Location,
@@ -71,12 +71,13 @@ export function resolveAndLoad(
   navSource: NavSource,
   env: Environment["relay"],
   prev: PrevState,
+  matcher: MatchFn = matchRoute,
 ): Resolution {
   const isSoftNav = navSource === "soft";
 
   // Pre-match the regular (non-intercepted) main route. Used both for the
   // same-page-nav guard below and the main-resolution branch further down.
-  const regularMainMatch = matchRoute(buckets.mainRoutes, location.pathname);
+  const regularMainMatch = matcher(buckets.mainRoutes, location.pathname);
 
   // Same-page navigation: the user is already on the route this nav
   // would land on, just with different search params or hash. Intercepts
@@ -96,7 +97,7 @@ export function resolveAndLoad(
   const slotIntercepts = new Map<string, Match | null>();
   if (isSoftNav && !samePageNav) {
     for (const [slotName, ictRoutes] of buckets.slotIntercepts) {
-      slotIntercepts.set(slotName, matchRoute(ictRoutes, location.pathname));
+      slotIntercepts.set(slotName, matcher(ictRoutes, location.pathname));
     }
   }
   const interceptHit = [...slotIntercepts.values()].some(
@@ -115,7 +116,7 @@ export function resolveAndLoad(
     }
     const regulars = buckets.slotRegulars.get(slotName);
     const pageMatch = regulars
-      ? matchRoute(regulars, location.pathname)
+      ? matcher(regulars, location.pathname)
       : null;
     if (pageMatch) {
       slotMatches.set(slotName, pageMatch);

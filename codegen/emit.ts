@@ -60,9 +60,15 @@ export function emitAll(
 //   - `network` (#46) — threaded into `createEnvironment` so consumers
 //     can supply a custom fetch (Idempotency-Key wrapper, telemetry,
 //     etc.) without monkey-patching `globalThis.fetch`.
+//   - `localGraphQL` — converted into a fetch via
+//     `createLocalGraphQLFetch` so Relay can execute against a local
+//     Pothos/Drizzle/SQLite schema without knowing a sync engine exists.
 //   - `swUpdate` (#53) — threaded into `<AppShell>` so consumers can
 //     tune the SW update lifecycle (idle threshold, observability
 //     callbacks) per the `SwUpdateBehavior` shape from #29.
+//   - `persistence` — threaded into `createEnvironment` so apps can
+//     scope or disable Relay RecordSource localStorage persistence without
+//     hand-editing the generated bootstrap.
 //
 // Imports + props are conditional on which fields the user exports —
 // apps that don't ship a config file get the original zero-config
@@ -118,22 +124,41 @@ export function emitMainEntry(ctx: EmitContext): void {
         ? readConfigExports(configPath)
         : new Set<string>();
     const hasNetwork = exports.has("network");
+    const hasLocalGraphQL = exports.has("localGraphQL");
     const hasSwUpdate = exports.has("swUpdate");
+    const hasPersistence = exports.has("persistence");
 
     // Build the import line incrementally so we only name what the user
     // actually exports. This prevents a "no exported member" type error
     // if someone writes a config file that, say, only sets `swUpdate`.
     const importNames: string[] = [];
     if (hasNetwork) importNames.push("network as __cruxNetwork");
+    if (hasLocalGraphQL) importNames.push("localGraphQL as __cruxLocalGraphQL");
     if (hasSwUpdate) importNames.push("swUpdate as __cruxSwUpdate");
+    if (hasPersistence) importNames.push("persistence as __cruxPersistence");
     const configImport =
         importNames.length > 0
             ? `import { ${importNames.join(", ")} } from "../src/app/crucible.config.ts";\n`
             : "";
+    const localGraphQLImport = hasLocalGraphQL
+        ? `import { createLocalGraphQLFetch, createLocalGraphQLSubscribe, prepareLocalGraphQL } from "${ctx.crucibleSpecifier}/runtime/local-graphql.ts";\n`
+        : "";
 
-    const envCall = hasNetwork
-        ? `Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch })`
-        : `Crucible.createEnvironment()`;
+    const prepareLocalGraphQL = hasLocalGraphQL
+        ? `if (__cruxLocalGraphQL) await prepareLocalGraphQL(__cruxLocalGraphQL);
+`
+        : "";
+    const envSetup = hasLocalGraphQL
+        ? hasNetwork
+            ? `const __cruxFetch = __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : __cruxNetwork?.fetch;
+const __cruxSubscribe = __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : __cruxNetwork?.subscribe;
+const environment = Crucible.createEnvironment({ fetch: __cruxFetch, subscribe: __cruxSubscribe, persistStore: ${hasPersistence ? "__cruxPersistence?.persistStore ?? " : ""}(__cruxLocalGraphQL ? false : true), storeScope: ${hasPersistence ? "__cruxPersistence?.scope" : "undefined"} });`
+            : `const environment = Crucible.createEnvironment({ fetch: __cruxLocalGraphQL ? createLocalGraphQLFetch(__cruxLocalGraphQL) : undefined, subscribe: __cruxLocalGraphQL ? createLocalGraphQLSubscribe(__cruxLocalGraphQL) : undefined, persistStore: ${hasPersistence ? "__cruxPersistence?.persistStore ?? " : ""}(__cruxLocalGraphQL ? false : true), storeScope: ${hasPersistence ? "__cruxPersistence?.scope" : "undefined"} });`
+        : hasNetwork
+          ? `const environment = Crucible.createEnvironment({ fetch: __cruxNetwork?.fetch, subscribe: __cruxNetwork?.subscribe${hasPersistence ? ", persistStore: __cruxPersistence?.persistStore, storeScope: __cruxPersistence?.scope" : ""} });`
+          : hasPersistence
+            ? `const environment = Crucible.createEnvironment({ persistStore: __cruxPersistence?.persistStore, storeScope: __cruxPersistence?.scope });`
+          : `const environment = Crucible.createEnvironment();`;
     const appShellOpen = hasSwUpdate
         ? `<Crucible.AppShell swUpdate={__cruxSwUpdate}>`
         : `<Crucible.AppShell>`;
@@ -141,10 +166,11 @@ export function emitMainEntry(ctx: EmitContext): void {
     const content = `${HEADER}
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import * as Crucible from "crucible";
+import * as Crucible from "${ctx.crucibleSpecifier}/crucible";
 import { routes } from "./routes.ts";
 ${configImport}
-const environment = ${envCall};
+${localGraphQLImport}
+${prepareLocalGraphQL}${envSetup}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -161,10 +187,10 @@ createRoot(document.getElementById("root")!).render(
 // top-level export names we recognize. We do a syntactic scan rather
 // than a full TypeScript compile here for two reasons: (a) codegen
 // runs every dev-server boot and on every file save, so it must be
-// cheap; (b) we only care about three or four specific names —
-// detecting them via regex is reliable for the patterns this file is
+// cheap; (b) we only care about a few specific names — detecting them
+// via regex is reliable for the patterns this file is
 // expected to hold (`export const network = …`, `export const
-// swUpdate = …`, occasionally re-exports). If a user resorts to
+// localGraphQL = …`, `export const swUpdate = …`, occasionally re-exports). If a user resorts to
 // dynamic exports the codegen will simply not detect them and the
 // emitted main.tsx will lack the corresponding wiring; that's a
 // reasonable footgun cost for keeping codegen fast and synchronous.
@@ -176,6 +202,7 @@ function readConfigExports(configPath: string): Set<string> {
     } catch {
         return found;
     }
+    source = stripCommentsAndStrings(source);
     // Recognize:
     //   export const X = …
     //   export let X = …
@@ -183,19 +210,168 @@ function readConfigExports(configPath: string): Set<string> {
     //   export { X }              ← bare re-export of a local binding
     //   export { foo as X }       ← aliased re-export
     // Only the known config-shape names are checked.
-    const known = ["network", "swUpdate"] as const;
+    const known = ["network", "localGraphQL", "swUpdate", "persistence"] as const;
     for (const name of known) {
-        const directDecl = new RegExp(
-            `\\bexport\\s+(?:const|let|var)\\s+${name}\\b`,
-        );
-        const namedExport = new RegExp(
-            `\\bexport\\s*\\{[^}]*\\b(?:[a-zA-Z_$][\\w$]*\\s+as\\s+)?${name}\\b[^}]*\\}`,
-        );
-        if (directDecl.test(source) || namedExport.test(source)) {
+        if (hasDirectExportDeclaration(source, name) || hasNamedExport(source, name)) {
             found.add(name);
         }
     }
     return found;
+}
+
+function hasDirectExportDeclaration(source: string, name: string): boolean {
+    const directDecl = /\bexport\s+(?:const|let|var)\s+/g;
+    for (const match of source.matchAll(directDecl)) {
+        const declaration = readDirectExportDeclaration(source, match.index + match[0].length);
+        for (const declarator of splitTopLevelDeclarators(declaration)) {
+            if (new RegExp(`^\\s*${name}\\b`).test(declarator)) return true;
+        }
+    }
+    return false;
+}
+
+function readDirectExportDeclaration(source: string, start: number): string {
+    let depth = 0;
+    for (let i = start; i < source.length; i++) {
+        const ch = source[i];
+        if (ch === "{" || ch === "[" || ch === "(") depth++;
+        if (ch === "}" || ch === "]" || ch === ")") depth = Math.max(0, depth - 1);
+        if (depth === 0 && ch === ";") return source.slice(start, i);
+        if (
+            depth === 0 &&
+            ch === "\n" &&
+            !source.slice(start, i).trimEnd().endsWith(",") &&
+            !/[=({[?:+\-*/&|.]$/.test(source.slice(start, i).trimEnd()) &&
+            !/^\s*,/.test(source.slice(i + 1))
+        ) {
+            return source.slice(start, i);
+        }
+        if (depth === 0 && ch === "\n" && /^\s*export\b/.test(source.slice(i + 1))) {
+            return source.slice(start, i);
+        }
+    }
+    return source.slice(start);
+}
+
+function splitTopLevelDeclarators(declaration: string): string[] {
+    const parts: string[] = [];
+    let start = 0;
+    let depth = 0;
+    for (let i = 0; i < declaration.length; i++) {
+        const ch = declaration[i];
+        if (ch === "{" || ch === "[" || ch === "(") depth++;
+        if (ch === "}" || ch === "]" || ch === ")") depth = Math.max(0, depth - 1);
+        if (ch === "," && depth === 0) {
+            parts.push(declaration.slice(start, i));
+            start = i + 1;
+        }
+    }
+    parts.push(declaration.slice(start));
+    return parts;
+}
+
+function hasNamedExport(source: string, name: string): boolean {
+    const exportBlock = /\bexport\s*\{([^}]*)\}/g;
+    for (const match of source.matchAll(exportBlock)) {
+        const specifiers = (match[1] ?? "").split(",");
+        for (const specifier of specifiers) {
+            const parts = specifier.trim().split(/\s+as\s+/);
+            const exportedName = (parts[1] ?? parts[0])?.trim();
+            if (exportedName === name) return true;
+        }
+    }
+    return false;
+}
+
+function stripCommentsAndStrings(source: string): string {
+    let out = "";
+    for (let i = 0; i < source.length; i++) {
+        const ch = source[i];
+        const next = source[i + 1];
+
+        if (ch === "/" && next === "/") {
+            out += "  ";
+            i += 2;
+            while (i < source.length && source[i] !== "\n") {
+                out += " ";
+                i++;
+            }
+            if (i < source.length) out += source[i];
+            continue;
+        }
+
+        if (ch === "/" && next === "*") {
+            out += "  ";
+            i += 2;
+            while (i < source.length) {
+                if (source[i] === "*" && source[i + 1] === "/") {
+                    out += "  ";
+                    i++;
+                    break;
+                }
+                out += source[i] === "\n" ? "\n" : " ";
+                i++;
+            }
+            continue;
+        }
+
+        if (ch === '"' || ch === "'" || ch === "`") {
+            const quote = ch;
+            out += " ";
+            while (++i < source.length) {
+                const current = source[i];
+                out += current === "\n" ? "\n" : " ";
+                if (current === "\\") {
+                    if (i + 1 < source.length) {
+                        i++;
+                        out += source[i] === "\n" ? "\n" : " ";
+                    }
+                    continue;
+                }
+                if (current === quote) break;
+            }
+            continue;
+        }
+
+        if (ch === "/" && isRegexLiteralStart(out)) {
+            out += " ";
+            let inClass = false;
+            while (++i < source.length) {
+                const current = source[i];
+                out += current === "\n" ? "\n" : " ";
+                if (current === "\\") {
+                    if (i + 1 < source.length) {
+                        i++;
+                        out += source[i] === "\n" ? "\n" : " ";
+                    }
+                    continue;
+                }
+                if (current === "[") inClass = true;
+                if (current === "]") inClass = false;
+                if (current === "/" && !inClass) {
+                    while (/[a-z]/i.test(source[i + 1] ?? "")) {
+                        i++;
+                        out += " ";
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+
+        out += ch;
+    }
+    return out;
+}
+
+function isRegexLiteralStart(strippedPrefix: string): boolean {
+    const trimmed = strippedPrefix.trimEnd();
+    if (trimmed.length === 0) return true;
+    if (/(^|[^\w$])(?:return|throw|case|delete|typeof|void|new|yield)$/.test(trimmed)) {
+        return true;
+    }
+    const prev = trimmed[trimmed.length - 1];
+    return prev != null && "([{=,:;!&|?+-*~^<>".includes(prev);
 }
 
 function emitEntrypoint(ctx: EmitContext, rwp: RouteWithPage): void {
@@ -207,21 +383,8 @@ function emitEntrypoint(ctx: EmitContext, rwp: RouteWithPage): void {
         parsed: rwp.parsed,
         segments,
         id: rwp.route.id,
-        kind: "page",
         crucibleSpecifier: ctx.crucibleSpecifier,
     });
-    // Sub-entrypoints declared via the page's `EntryPoints` type. Each becomes
-    // its own emitted module. Recursion happens here too — a sub can declare
-    // its own `EntryPoints` and we walk it.
-    for (const ep of rwp.parsed.entryPoints) {
-        emitSubEntrypointModule({
-            ctx,
-            parentRouteId: rwp.route.id,
-            entryName: ep.fieldName,
-            sourceFile: ep.modulePath + ".tsx",
-            segments,
-        });
-    }
 }
 
 type EmitModuleOpts = {
@@ -230,7 +393,6 @@ type EmitModuleOpts = {
     parsed: ParsedPage;
     segments: ReadonlyArray<RouteSegment>;
     id: string;
-    kind: "page" | "sub";
     crucibleSpecifier: string;
 };
 
@@ -238,20 +400,19 @@ function emitEntrypointModule(opts: EmitModuleOpts): void {
     const fileDir = dirname(opts.outFile);
     const sourcePathRel = relPosix(fileDir, opts.sourceFile);
 
-    // Two imports per query, intentionally split across two artifacts:
+    // Two runtime handles per query, intentionally split across two artifacts:
     //   - VALUE: `<Op>$parameters.ts` — relay-compiler's preload header
     //     (operation id + name + kind, ~20 lines). Tiny.
-    //   - TYPE: `<Op>.graphql.ts` — the full normalized AST + variable
-    //     types. Heavy. We only need the type at the entry-point boundary
-    //     (`variables: <Op>["variables"]`); types are erased at runtime.
+    //   - LAZY VALUE: `<Op>.graphql.ts` — the full normalized AST + client
+    //     resolver imports. Heavy, so keep it behind JSResource, but warm it
+    //     at navigation time independently from the page component chunk.
     //
     // The page module itself still imports `.graphql.ts` for
-    // `usePreloadedQuery(graphql\`...\`, queries.x)`, but the page is
-    // code-split per route — its AST cost is amortized over actual route
-    // visits. The entry-point is in the boot bundle (it's part of the
-    // routing manifest), so its imports stay in the critical path. With
-    // the parameters-only import, N pages contribute N × tiny-headers
-    // instead of N × full-ASTs to boot.
+    // `usePreloadedQuery(graphql\`...\`, queries.x)`. The separate artifact
+    // resource prevents a hidden waterfall for queries with Relay client
+    // resolvers: Relay can start the network from `$parameters.ts`, while
+    // the full operation/client-resolver artifact loads in parallel with the
+    // page chunk instead of being discovered only after the page import.
     //
     // `$parameters.ts` is only emitted for queries marked `@preloadable`.
     // Pages must declare their queries as preloadable (Crucible's
@@ -263,7 +424,7 @@ function emitEntrypointModule(opts: EmitModuleOpts): void {
             const parametersRel =
                 relPosix(fileDir, `${stem}$parameters`) + ".ts";
             const typeRel = relPosix(fileDir, q.artifactPath) + ".ts";
-            return `import query${i} from "${parametersRel}";\nimport type { ${q.artifactExport} } from "${typeRel}";`;
+            return `import query${i} from "${parametersRel}";\nimport type { ${q.artifactExport} } from "${typeRel}";\nconst queryArtifact${i} = JSResource("${opts.id}.query${i}", () => import("${typeRel}") as Promise<{ default: import("relay-runtime").ConcreteRequest }>);`;
         })
         .join("\n");
 
@@ -284,7 +445,7 @@ function emitEntrypointModule(opts: EmitModuleOpts): void {
                 mapped.length === 0
                     ? "{}"
                     : `{ ${mapped.map((v) => `${v}: params.${v}`).join(", ")} }`;
-            return `      ${q.fieldName}: { parameters: query${i}, variables: ${variablesLiteral} },`;
+            return `      ${q.fieldName}: { parameters: query${i}, artifact: queryArtifact${i}, variables: ${variablesLiteral} },`;
         })
         .join("\n");
 
@@ -295,66 +456,34 @@ function emitEntrypointModule(opts: EmitModuleOpts): void {
 ${opts.parsed.queries
     .map(
         (q, i) =>
-            `      ${q.fieldName}: { parameters: typeof query${i}; variables: ${q.artifactExport}["variables"] };`,
+            `      ${q.fieldName}: { parameters: typeof query${i}; artifact: typeof queryArtifact${i}; variables: ${q.artifactExport}["variables"] };`,
     )
     .join("\n")}
     }`
         : "Record<string, never>";
 
     // Page modules receive the unwrapped `data` (the single @preloadable
-    // PreloadedQuery), `params`, `search`, and the resolved sub-entrypoints
-    // map. Sub-entrypoints get only `data` + nested `entryPoints`.
-    //
-    // The page's `Route` runtime export carries the title + search-spec
-    // config; PageRenderer reads it directly. We don't type `Route` on
-    // the module shape because emit can't easily round-trip the typed
-    // `RouteObject` generics — PageRenderer reads it via a structural
-    // cast at runtime.
-    const isPage = opts.kind === "page";
+    // PreloadedQuery), `params`, and validated `search`.
     const dataField = opts.parsed.queries.length
         ? `data: Queries["data"]["parameters"] extends infer P ? import("react-relay").PreloadedQuery<${
               opts.parsed.queries[0]!.artifactExport
           }> : never`
         : `data: undefined`;
-    const moduleType = isPage
-        ? `Promise<{
-        default: ComponentType<{ ${dataField}; params: any; search: any; entryPoints: Record<string, any> }>;
-      }>`
-        : `Promise<{
-        default: ComponentType<{ ${dataField}; entryPoints: Record<string, any> }>;
+    const moduleType = `Promise<{
+        default: ComponentType<{ ${dataField}; params: any; search: any }>;
       }>`;
 
     const standardSchemaImport = "";
 
-    // Sub-entrypoints declared by THIS module. Imports + entryPoints field on
-    // the emitted entrypoint object. Recursion: any sub-entrypoint can itself
-    // declare more sub-entrypoints.
-    const subEpImports: string[] = [];
-    const subEpFields: string[] = [];
-    for (const ep of opts.parsed.entryPoints) {
-        const subId = `${opts.id}.${ep.fieldName}`;
-        const subFile = `./${subId}.ts`;
-        const ident = `__ep_${ep.fieldName.replace(/[^a-zA-Z0-9]/g, "_")}`;
-        subEpImports.push(`import ${ident} from "${subFile}";`);
-        subEpFields.push(`    ${ep.fieldName}: ${ident},`);
-    }
-    const entryPointsField =
-        subEpFields.length > 0
-            ? `\n  entryPoints: {\n${subEpFields.join("\n")}\n  },`
-            : "";
-
-    const epType = isPage ? "EntryPoint" : "SubEntryPoint";
-
     const content = `${HEADER}
-import { JSResource, type ${epType} } from "${opts.crucibleSpecifier}/runtime/entrypoint.ts";
+import { JSResource, type EntryPoint } from "${opts.crucibleSpecifier}/runtime/entrypoint.ts";
 import type { ComponentType } from "react";
 import type { Metadata } from "${opts.crucibleSpecifier}/runtime/metadata.tsx";
 ${standardSchemaImport}${queryImports}
-${subEpImports.join("\n")}
 
 type Queries = ${queriesType};
 
-const entrypoint: ${epType}<Queries> = {
+const entrypoint: EntryPoint<Queries> = {
   root: JSResource(
     "${opts.id}",
     () =>
@@ -364,43 +493,12 @@ const entrypoint: ${epType}<Queries> = {
     queries: {
 ${queryEntries}
     } as Queries,
-  }),${entryPointsField}
+  }),
 };
 
 export default entrypoint;
 `;
     writeIfChanged(opts.outFile, content);
-}
-
-function emitSubEntrypointModule(opts: {
-    ctx: EmitContext;
-    parentRouteId: string;
-    entryName: string;
-    sourceFile: string;
-    segments: ReadonlyArray<RouteSegment>;
-}): void {
-    const subId = `${opts.parentRouteId}.${opts.entryName}`;
-    const outFile = join(opts.ctx.outDir, "entrypoints", `${subId}.ts`);
-    const subParsed = parsePage(opts.sourceFile);
-    emitEntrypointModule({
-        outFile,
-        sourceFile: opts.sourceFile,
-        parsed: subParsed,
-        segments: opts.segments,
-        id: subId,
-        kind: "sub",
-        crucibleSpecifier: opts.ctx.crucibleSpecifier,
-    });
-    // Recurse into nested entry points declared by this sub.
-    for (const nested of subParsed.entryPoints) {
-        emitSubEntrypointModule({
-            ctx: opts.ctx,
-            parentRouteId: subId,
-            entryName: nested.fieldName,
-            sourceFile: nested.modulePath + ".tsx",
-            segments: opts.segments,
-        });
-    }
 }
 
 type ResourceRegistry = {

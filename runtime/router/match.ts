@@ -17,7 +17,11 @@ export function matchRoute(
     let i = 0;
     for (const seg of route.segments) {
       if (seg.kind === "catchall") {
-        params[seg.name] = parts.slice(i).join("/");
+        try {
+          params[seg.name] = parts.slice(i).map((part) => decodeURIComponent(part)).join("/");
+        } catch {
+          continue outer;
+        }
         i = parts.length;
         break;
       }
@@ -53,7 +57,11 @@ export function matchDefault(
     let i = 0;
     for (const seg of route.segments) {
       if (seg.kind === "catchall") {
-        params[seg.name] = parts.slice(i).join("/");
+        try {
+          params[seg.name] = parts.slice(i).map((part) => decodeURIComponent(part)).join("/");
+        } catch {
+          continue outer;
+        }
         return { route, params };
       }
       if (i >= parts.length) continue outer;

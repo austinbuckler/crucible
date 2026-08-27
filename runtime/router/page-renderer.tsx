@@ -1,26 +1,23 @@
 import type { ComponentType } from "react";
-import type { JSResource, QueryParameter, SubModule } from "../entrypoint.ts";
 import {
   DocumentHead,
   PageMetadataOverrideProvider,
   type Metadata,
 } from "../metadata.tsx";
-import type { RouteObject } from "../route.ts";
+import type { SearchSpec } from "../route.ts";
 import { readResource } from "./load.ts";
 import { validateSearchParams } from "./search-params.ts";
-import type { LoadedEntrypoint, LoadedSubEntrypoint } from "./types.ts";
+import type { LoadedEntrypoint } from "./types.ts";
 
 // Renders the leaf page component for a loaded entrypoint. Handles:
 //   - readResource(entrypoint.root): synchronously reads or suspends.
 //   - metadata layering: outer layouts → inner layouts → page (last wins).
-//   - searchParams validation via Standard Schema (Route.config.search).
+//   - searchParams validation via Standard Schema (`export const searchParams`).
 //
-// Page modules export `const Route = Crucible.Route(pattern, config)`
-// (omakase contract): the runtime reads `Route.config.title` for the
-// document head and `Route.config.search` for searchParams validation.
-// The page receives the unwrapped `data` (the single @preloadable
-// PreloadedQuery from `loaded.preloaded.data`) plus `params`, `search`,
-// and the resolved sub-entrypoints map.
+// Page modules use direct exports: `metadata`, `searchParams`, and `query`.
+// The page receives the unwrapped `data` (the single
+// @preloadable PreloadedQuery from `loaded.preloaded.data`) plus `params`,
+// and `search`.
 export function PageRenderer({
   loaded,
   params,
@@ -32,29 +29,18 @@ export function PageRenderer({
 }) {
   const pageModule = readResource(loaded.route.entrypoint.root);
   const Page = pageModule.default as ComponentType<Record<string, unknown>>;
-  const route = (
-    pageModule as { Route?: RouteObject<string, never, never, never> }
-  ).Route;
 
-  // Outer layouts → inner layouts → page (last wins). `Route.config`
-  // carries static title + meta for the page layer; pages that need
-  // data-derived titles call `Crucible.useDocumentTitle` from the
-  // body so the title flows naturally through React's normal render.
-  const pageMetadata: Metadata | undefined =
-    route?.config?.title || route?.config?.meta
-      ? {
-          ...(route.config.meta ?? {}),
-          ...(route.config.title ? { title: route.config.title } : {}),
-        }
-      : undefined;
+  // Outer layouts → inner layouts → page (last wins). Pages that need
+  // data-derived titles call `Crucible.useDocumentTitle` from the body so the
+  // title flows naturally through React's normal render.
   const metadataLayers: ReadonlyArray<Metadata | undefined> = [
     ...loaded.route.frames.map(
       (f) => f.layout?.getModuleIfRequired()?.metadata,
     ),
-    pageMetadata,
+    (pageModule as { metadata?: Metadata }).metadata,
   ];
 
-  const searchSpec = route?.config?.search;
+  const searchSpec = (pageModule as { searchParams?: SearchSpec }).searchParams;
   const search = searchSpec
     ? validateSearchParams(searchSpec, rawSearch)
     : rawSearch;
@@ -78,31 +64,9 @@ export function PageRenderer({
             data={data}
             params={params}
             search={search}
-            entryPoints={loaded.entryPoints}
           />
         </>
       )}
     </PageMetadataOverrideProvider>
-  );
-}
-
-
-// Renders a sub-entrypoint with its preloaded queries. Pages access this
-// via `entryPoints.<name>` and wrap it in `<Suspense>` to control the
-// fallback while the sub's chunk + queries are in-flight.
-export function EntryPointContainer({
-  entryPoint,
-}: {
-  entryPoint: LoadedSubEntrypoint;
-}) {
-  const mod = readResource(
-    entryPoint.ep.root as JSResource<SubModule<Record<string, QueryParameter>>>,
-  );
-  const Component = mod.default as ComponentType<Record<string, unknown>>;
-  return (
-    <Component
-      queries={entryPoint.preloaded}
-      entryPoints={entryPoint.entryPoints}
-    />
   );
 }
