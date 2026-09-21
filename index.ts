@@ -211,9 +211,9 @@ export type CrucibleOptions = {
     // `["https://api.example.com", "https://*.sentry.io"]`.
     connectSrcAllowlist?: ReadonlyArray<string>;
     experimental?: {
-        // Enables React's canary `<ViewTransition>` integration for route
+        // Enables React's optional `<ViewTransition>` integration for route
         // swaps. Requires a React runtime that exports `ViewTransition`;
-        // stable React users safely fall back to regular Transition + Suspense.
+        // older React 19 releases fall back to regular Transition + Suspense.
         reactViewTransitions?: boolean;
     };
 };

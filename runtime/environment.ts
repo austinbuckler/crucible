@@ -348,7 +348,7 @@ function createRelayEnvironment(
     // navigation supersedes a request, or when a component using
     // `useQueryLoader` releases its retain) propagates into our internal
     // AbortController. Verified against the installed
-    // `relay-runtime@20.1.1` source (`lib/network/RelayObservable.js`):
+    // `relay-runtime@21.0.1` source (`lib/network/RelayObservable.js`):
     //   - `Network.create(fetchFn)` calls `convertFetch`, which calls
     //     `RelayObservable.from(fetchFn(...))`. When `fetchFn` returns a
     //     RelayObservable directly, `from` short-circuits and reuses it.

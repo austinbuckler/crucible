@@ -32,9 +32,9 @@ export const localGraphQL = {
 };
 ```
 
-Relay never knows about SQLite or sync. It sends a normal GraphQL POST, and Crucible routes that POST to the local worker because `localGraphQL` is exported.
+Relay never knows where domain rows came from. It sends a normal GraphQL POST, and Crucible routes that POST to the local worker because `localGraphQL` is exported. This demo does not run the replica protocol.
 
-This example proves the browser-side data path. It intentionally does not include a production sync server; see [`docs/local-first-sync.md`](../../docs/local-first-sync.md) for the recommended server contract, outbox shape, and Drizzle-style pseudo-code.
+This example proves the browser-side data path. It intentionally does not include a production outbox or sync server. The app-graph status panel is a browser status demo, not replication state. See [`docs/local-first-sync.md`](../../docs/local-first-sync.md) for the Worker runtime, workspace-scoped server contract, outbox shape, and adapter guidance. Personal-only feeds are a special case; workspace/sync-group feeds are the default.
 
 The page includes mutations so you can prove data is durable:
 

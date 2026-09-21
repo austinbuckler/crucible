@@ -19,7 +19,7 @@ interface ImportMetaEnv {
     // change orphans stale records.
     readonly CRUCIBLE_SCHEMA_HASH: string;
     // Build-time flag from `crucible({ experimental: { reactViewTransitions } })`.
-    // When true, the router wraps route content in React canary's
+    // When true, the router wraps route content in React's
     // `<ViewTransition>` if the installed React runtime exports it.
     readonly CRUCIBLE_REACT_VIEW_TRANSITIONS: boolean;
     // Build-time API base URL. Empty string for web builds (relative

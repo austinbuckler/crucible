@@ -62,7 +62,7 @@ export type AppProps = {
   // Fallback rendered by the top-level error boundary. Defaults to a
   // built-in. Per-frame `error.tsx` files take precedence when present.
   errorFallback?: ComponentType<FallbackProps>;
-  // Enable React's canary `<ViewTransition>` wrapper when the installed
+  // Enable React's `<ViewTransition>` wrapper when the installed
   // React runtime exports it. Defaults to the Vite plugin's
   // `experimental.reactViewTransitions` flag. Crucible never calls the
   // native `document.startViewTransition` API directly.

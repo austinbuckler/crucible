@@ -4,6 +4,8 @@ Crucible doesn't do data fetching itself. It does **route-driven preloading** of
 
 The pattern is borrowed from [Pastoria](http://pastoria.org) — same EntryPoint shape, same parallel-chunk-and-data preload, adapted for Vite + Relay. If you're new to Relay's `loadQuery` + `usePreloadedQuery` API, [the Relay docs](https://relay.dev/docs/api-reference/use-preloaded-query/) cover the primitives Crucible composes.
 
+Crucible currently targets Relay 21.0.1 across `react-relay` and `relay-runtime`; the local example also keeps `relay-compiler` and `babel-plugin-relay` on 21.0.1. Relay 21 ships its own TypeScript declarations, so a separate `@types/relay-runtime` package is not required.
+
 Framework/runtime state lives in the Relay graph too. See [App Graph](./app-graph.md) for `app { storage sync }` client resolver fields and the narrow action hooks that refresh/request platform state. For native-feeling refresh/relaunch restoration, see [View Persistence](./view-persistence.md).
 
 ## The flow
@@ -222,7 +224,7 @@ The Relay network handler in `runtime/environment.ts` retries on **429 Too Many 
 
 **Network errors are NOT retried** at this layer — `fetch()` rejecting (offline, DNS failure, TLS error) propagates straight to the caller. Wire up your own offline-aware UX above the Relay error boundary if needed.
 
-**Cancellation.** The handler bridges Relay's observable-unsubscribe pathway to an internal `AbortController`. When Relay drops a request — for example, a navigation supersedes the previous query, a `useQueryLoader` releases its retain, or a component using the request unmounts — the bridge fires `abort()` on the in-flight fetch AND interrupts any pending backoff sleep, so retries don't keep hammering the server for a result nobody will read. (Relay 20.1.1's `Network.create` does NOT pass an `AbortSignal` into the fetch closure; this is verified against the installed `relay-runtime` source. The bridge works by returning a `RelayObservable` whose cleanup function aborts our controller.) Net effect: cancelable, no manual plumbing required at call sites.
+**Cancellation.** The handler bridges Relay's observable-unsubscribe pathway to an internal `AbortController`. When Relay drops a request — for example, a navigation supersedes the previous query, a `useQueryLoader` releases its retain, or a component using the request unmounts — the bridge fires `abort()` on the in-flight fetch AND interrupts any pending backoff sleep, so retries don't keep hammering the server for a result nobody will read. Relay 21.0.1's `Network.create` does not pass an `AbortSignal` into the fetch closure; the bridge returns a `RelayObservable` whose cleanup function aborts our controller. Net effect: cancelable, no manual plumbing required at call sites.
 
 ## Custom fetch
 

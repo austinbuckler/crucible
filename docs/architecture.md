@@ -155,7 +155,7 @@ Every phase is a small, named function in its own file. Each is testable in isol
 | `onError` | `(err, info) => void` | none | Wire to Sentry/Datadog. Fires for both top-level + per-frame error boundaries. |
 | `onNavigate` | `(event) => void` | none | Pre-resolve hook. `event = { from, to, source, startedAt }`. `startedAt` is `performance.now()` when navigate fired — pair with `onResolve` for nav-latency RUM. |
 | `onResolve` | `(event) => void` | none | Post-commit hook. `event = { location, resolution, startedAt, resolvedAt, durationMs }`. `durationMs = resolvedAt - startedAt`; feed into a p50/p95 histogram. |
-| `viewTransitions` | `boolean` | plugin flag | Wrap route content in React canary `<ViewTransition>` when available; no direct native View Transition API calls. |
+| `viewTransitions` | `boolean` | plugin flag | Wrap route content in React `<ViewTransition>` when available; React 19.3 ships the stable API and older React 19 releases safely omit the wrapper. |
 | `restoreScroll` | `boolean` | `true` | Toggle the scroll restoration phase. |
 | `manageFocus` | `boolean` | `true` | Toggle the focus phase. |
 

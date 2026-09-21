@@ -63,6 +63,29 @@ export {
   type FetchLike,
   type SubscribeLike,
 } from "./runtime/environment.ts";
+export {
+  createSingleWriterQueue,
+  createSyncCursorHelpers,
+  createSyncRuntime,
+  HoldBackQueue,
+  syncCursorEpochKey,
+  syncCursorVersionKey,
+  SYNC_PULL_PAGE_SIZE,
+  type PushAdapter,
+  type SingleWriterQueue,
+  type SyncAcknowledgementBarrier,
+  type SyncApplyContext,
+  type SyncCursor,
+  type SyncCursorKeyValueStore,
+  type SyncFlushContext,
+  type HoldBackQueueOptions,
+  type SyncPullPage,
+  type SyncRuntime,
+  type SyncRuntimeOptions,
+  type SyncRuntimeSnapshot,
+  type SyncStatus,
+  type SyncStatusStore,
+} from "./runtime/sync.ts";
 
 /**
  * Shape of `src/app/crucible.config.ts`. The codegen-emitted main.tsx

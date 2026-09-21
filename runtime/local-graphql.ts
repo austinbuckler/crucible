@@ -1,6 +1,7 @@
 import type { ExecutionResult, GraphQLSchema } from "graphql";
 import { Observable as RelayObservable, type GraphQLResponse } from "relay-runtime";
 import type { FetchLike, SubscribeLike } from "./environment.ts";
+import type { SyncRuntime } from "./sync.ts";
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -40,6 +41,11 @@ export type LocalGraphQLFetchOptions<TContext = unknown> = {
    * metadata before React mounts.
    */
   bootstrap?: () => MaybePromise<void>;
+  /**
+   * Optional Worker-side replication runtime. It starts after bootstrap and
+   * runs beside the local GraphQL executor, outside Relay.
+   */
+  syncRuntime?: SyncRuntime;
 };
 
 export type LocalGraphQLWorkerOptions = {
@@ -86,6 +92,11 @@ type WorkerSubscribeMessage = {
   init: WorkerRequestInit;
 };
 
+type WorkerNetworkMessage = {
+  type: "crucible:local-graphql:network";
+  isOnline: boolean;
+};
+
 type WorkerResponseMessage = {
   type: "crucible:local-graphql:response";
   id: WorkerMessageId;
@@ -124,9 +135,11 @@ type WorkerOutboundMessage =
   | WorkerRequestMessage
   | WorkerInitMessage
   | WorkerCancelMessage
-  | WorkerSubscribeMessage;
+  | WorkerSubscribeMessage
+  | WorkerNetworkMessage;
 
 const workerCache = new WeakMap<LocalGraphQLWorkerOptions, Worker>();
+const workerNetworkObserverCache = new WeakSet<Worker>();
 const bootstrapCache = new WeakMap<LocalGraphQLFetchOptions, Promise<void>>();
 const localGraphQLClientId = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
 let nextWorkerRequestIdValue = 1;
@@ -154,7 +167,22 @@ function getLocalGraphQLWorker(options: LocalGraphQLWorkerOptions): Worker {
   if (cached) return cached;
   const worker = typeof options.worker === "function" ? options.worker() : options.worker;
   workerCache.set(options, worker);
+  observeLocalGraphQLWorkerNetwork(worker);
   return worker;
+}
+
+function observeLocalGraphQLWorkerNetwork(worker: Worker): void {
+  if (workerNetworkObserverCache.has(worker) || typeof window === "undefined") return;
+  workerNetworkObserverCache.add(worker);
+  const publish = () => {
+    worker.postMessage({
+      type: "crucible:local-graphql:network",
+      isOnline: typeof navigator.onLine !== "boolean" || navigator.onLine,
+    } satisfies WorkerOutboundMessage);
+  };
+  window.addEventListener("online", publish);
+  window.addEventListener("offline", publish);
+  publish();
 }
 
 type LocalGraphQLWorkerScope = EventTarget & {
@@ -758,19 +786,34 @@ export function prepareLocalGraphQL<TContext = unknown>(
 export function serveLocalGraphQLWorker<TContext = unknown>(
   options: LocalGraphQLFetchOptions<TContext>,
 ): void {
-  const localFetch = createLocalGraphQLFetch(options);
-  const localSubscribe = createLocalGraphQLSubscribe(options);
+  const workerOptions: LocalGraphQLFetchOptions<TContext> = { ...options };
+  const localFetch = createLocalGraphQLFetch(workerOptions);
+  const localSubscribe = createLocalGraphQLSubscribe(workerOptions);
   const cancelled = new Set<WorkerMessageId>();
   const subscriptions = new Map<WorkerMessageId, { unsubscribe: () => void; abort: () => void }>();
   const pendingSubscriptions = new Set<WorkerMessageId>();
   const requestControllers = new Map<WorkerMessageId, AbortController>();
   const scope = globalThis as unknown as LocalGraphQLWorkerScope;
+  let workerReady: Promise<void> | null = null;
+  const prepareWorker = () => {
+    workerReady ??= (async () => {
+      await addSyncRuntimeFields(workerOptions);
+      await runLocalGraphQLBootstrap(workerOptions);
+      await workerOptions.syncRuntime?.start();
+    })();
+    return workerReady;
+  };
 
   scope.addEventListener(
     "message",
     (event: MessageEvent<WorkerOutboundMessage>) => {
       const message = event.data;
       if (!message) return;
+
+      if (message.type === "crucible:local-graphql:network") {
+        workerOptions.syncRuntime?.setOnline(message.isOnline);
+        return;
+      }
 
       if (message.type === "crucible:local-graphql:cancel") {
         const requestController = requestControllers.get(message.id);
@@ -799,7 +842,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
       if (message.type === "crucible:local-graphql:init") {
         void (async () => {
           try {
-            await runLocalGraphQLBootstrap(options);
+            await prepareWorker();
             scope.postMessage({
               type: "crucible:local-graphql:response",
               id: message.id,
@@ -826,7 +869,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
         pendingSubscriptions.add(message.id);
         void (async () => {
           try {
-            await runLocalGraphQLBootstrap(options);
+            await prepareWorker();
             if (cancelled.has(message.id)) {
               cancelled.delete(message.id);
               pendingSubscriptions.delete(message.id);
@@ -906,7 +949,7 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
 
       void (async () => {
         try {
-          await runLocalGraphQLBootstrap(options);
+          await prepareWorker();
           if (cancelled.has(message.id)) {
             cancelled.delete(message.id);
             return;
@@ -951,4 +994,40 @@ export function serveLocalGraphQLWorker<TContext = unknown>(
       })();
     },
   );
+}
+
+async function addSyncRuntimeFields<TContext>(
+  options: LocalGraphQLFetchOptions<TContext>,
+): Promise<void> {
+  const runtime = options.syncRuntime;
+  if (!runtime) return;
+
+  // Keep GraphQL schema tools inside the Worker bundle. The main thread only
+  // needs the local GraphQL RPC adapter and should not load the executor.
+  const { extendSchema, parse } = await import("graphql");
+
+  const queryFields = options.schema.getQueryType()?.getFields();
+  const addQueryField = !queryFields?.syncRuntime;
+  const definitions: string[] = [];
+  if (!options.schema.getType("SyncStatus")) {
+    definitions.push("enum SyncStatus { LOCAL_DRAFT PENDING_FLUSH PENDING_ACK SYNCED }");
+  }
+  if (!options.schema.getType("CrucibleSyncRuntime")) {
+    definitions.push(`type CrucibleSyncRuntime {
+      isLeader: Boolean!
+      isOnline: Boolean!
+      pendingCount: Int!
+      lastError: String
+    }`);
+  }
+  if (addQueryField) {
+    definitions.push("extend type Query { syncRuntime: CrucibleSyncRuntime! }");
+  }
+
+  const schema = definitions.length > 0
+    ? extendSchema(options.schema, parse(definitions.join("\n")))
+    : options.schema;
+  const field = schema.getQueryType()?.getFields().syncRuntime;
+  if (field) field.resolve = () => runtime.getSnapshot();
+  options.schema = schema;
 }

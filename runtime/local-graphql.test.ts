@@ -5,7 +5,17 @@ import {
   createLocalGraphQLFetch,
   createLocalGraphQLSubscribe,
   prepareLocalGraphQL,
+  serveLocalGraphQLWorker,
 } from "./local-graphql.ts";
+import type { SyncRuntime } from "./sync.ts";
+
+async function waitForCondition(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for local GraphQL Worker.");
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
 
 async function readJson(res: Response): Promise<unknown> {
   return res.json();
@@ -260,5 +270,98 @@ describe("createLocalGraphQLSubscribe", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(sourceReturned).toBe(true);
+  });
+});
+
+describe("serveLocalGraphQLWorker sync runtime", () => {
+  test("adds syncRuntime to the local schema and starts sync after bootstrap", async () => {
+    const originalAddEventListener = Object.getOwnPropertyDescriptor(globalThis, "addEventListener");
+    const originalPostMessage = Object.getOwnPropertyDescriptor(globalThis, "postMessage");
+    const messages: Array<Record<string, unknown>> = [];
+    const order: string[] = [];
+    const onlineSignals: boolean[] = [];
+    let onMessage: ((event: MessageEvent<unknown>) => void) | undefined;
+
+    Object.defineProperty(globalThis, "addEventListener", {
+      configurable: true,
+      value: (type: string, listener: (event: MessageEvent<unknown>) => void) => {
+        if (type === "message") onMessage = listener;
+      },
+    });
+    Object.defineProperty(globalThis, "postMessage", {
+      configurable: true,
+      value: (message: Record<string, unknown>) => messages.push(message),
+    });
+
+    const syncRuntime = {
+      start: async () => {
+        order.push("sync:start");
+      },
+      setOnline: (online: boolean) => onlineSignals.push(online),
+      getSnapshot: () => ({
+        isLeader: true,
+        isOnline: true,
+        pendingCount: 3,
+        lastError: null,
+      }),
+    } as unknown as SyncRuntime;
+
+    try {
+      serveLocalGraphQLWorker({
+        schema: buildSchema("type Query { hello: String! }"),
+        bootstrap: async () => {
+          order.push("bootstrap");
+        },
+        syncRuntime,
+      });
+
+      const dispatch = (data: Record<string, unknown>) => {
+        onMessage?.({ data } as MessageEvent<unknown>);
+      };
+      dispatch({ type: "crucible:local-graphql:network", isOnline: false });
+      dispatch({ type: "crucible:local-graphql:init", id: "sync-init" });
+      await waitForCondition(() => messages.some((message) => message.id === "sync-init"));
+
+      expect(onlineSignals).toEqual([false]);
+      expect(order).toEqual(["bootstrap", "sync:start"]);
+
+      dispatch({
+        type: "crucible:local-graphql:request",
+        id: "sync-query",
+        input: "/api/graphql",
+        init: {
+          method: "POST",
+          body: JSON.stringify({
+            query: "query RuntimeQuery { syncRuntime { isLeader isOnline pendingCount lastError } }",
+          }),
+        },
+      });
+      await waitForCondition(() => messages.some((message) => message.id === "sync-query"));
+
+      const response = messages.find((message) => message.id === "sync-query");
+      expect(response?.type).toBe("crucible:local-graphql:response");
+      expect(JSON.parse(String(response?.body))).toEqual({
+        data: {
+          syncRuntime: {
+            isLeader: true,
+            isOnline: true,
+            pendingCount: 3,
+            lastError: null,
+          },
+        },
+      });
+      expect(order).toEqual(["bootstrap", "sync:start"]);
+    } finally {
+      if (originalAddEventListener) {
+        Object.defineProperty(globalThis, "addEventListener", originalAddEventListener);
+      } else {
+        Reflect.deleteProperty(globalThis, "addEventListener");
+      }
+      if (originalPostMessage) {
+        Object.defineProperty(globalThis, "postMessage", originalPostMessage);
+      } else {
+        Reflect.deleteProperty(globalThis, "postMessage");
+      }
+    }
   });
 });
